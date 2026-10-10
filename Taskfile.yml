@@ -1,0 +1,76 @@
+version: "3"
+
+tasks:
+  build:
+    desc: Build the textshot CLI -> ./bin/textshot
+    dir: "{{.TASKFILE_DIR}}"
+    silent: true
+    cmds:
+      - mkdir -p "{{.TASKFILE_DIR}}/bin"
+      - go build -o "{{.TASKFILE_DIR}}/bin/textshot" ./cmd/textshot
+
+  install:
+    desc: Build + copy to ~/.local/bin/textshot
+    dir: "{{.TASKFILE_DIR}}"
+    deps: [build]
+    silent: true
+    cmds:
+      - mkdir -p ~/.local/bin
+      - cp "{{.TASKFILE_DIR}}/bin/textshot" ~/.local/bin/textshot
+      - echo "Installed to ~/.local/bin/textshot"
+
+  test:
+    desc: Hermetic unit tests (no downloads, excludes test/e2e)
+    cmds:
+      - go test $(go list ./... | grep -v '/test/e2e')
+
+  test:race:
+    desc: Unit tests with the race detector
+    cmds:
+      - go test -race $(go list ./... | grep -v '/test/e2e')
+
+  test:e2e:
+    desc: Model-backed tests (downloads ONNX Runtime + models into the cache on first run); results in test/results/
+    cmds:
+      - TEXTSHOT_E2E=1 go test -v ./test/e2e/
+
+  bench:
+    desc: Per-frame OCR latency on the 1080p fixture
+    cmds:
+      - TEXTSHOT_E2E=1 go test -run XXX -bench . -benchtime 5x ./test/e2e/
+
+  test:nocgo:
+    desc: Verify the CGO_ENABLED=0 stub compiles
+    cmds:
+      - CGO_ENABLED=0 go build ./...
+      - CGO_ENABLED=0 go vet ./...
+
+
+  models:export:
+    desc: Export OmniParser icon_detect_v3 to ONNX -> dist/models/ (needs uv; downloads 281 MB weights once)
+    dir: "{{.TASKFILE_DIR}}"
+    cmds:
+      - uv run --project tools/export-icon-detect tools/export-icon-detect/export.py --out dist/models {{.CLI_ARGS}}
+
+  models:check:
+    desc: Verify every dist/models/*.sha256 is pinned in models.go
+    dir: "{{.TASKFILE_DIR}}"
+    cmds:
+      - |
+        for f in dist/models/*.sha256; do
+          sha=$(cut -d' ' -f1 "$f")
+          grep -q "$sha" models.go || { echo "models.go does not pin $sha ($f)"; exit 1; }
+          echo "ok: $f"
+        done
+
+  vet:
+    cmds:
+      - go vet ./...
+
+  tidy:
+    cmds:
+      - go mod tidy
+
+  clean:
+    cmds:
+      - rm -rf bin/ coverage.out

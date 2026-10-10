@@ -1,0 +1,45 @@
+name: release
+
+on:
+  push:
+    tags: ["models-v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  models:
+    name: Export and publish ONNX models
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: astral-sh/setup-uv@v7
+
+      - uses: arduino/setup-task@v2
+        with:
+          version: 3.x
+          repo-token: ${{ github.token }}
+
+      - name: Export icon_detect_v3 to ONNX
+        run: task models:export
+
+      - name: Verify the export matches the pins in models.go
+        run: task models:check
+
+      - name: Publish as release assets
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --notes "ONNX models downloaded by textshot on first use. See models.go for the pins." \
+            dist/models/*
+
+      - uses: actions/upload-artifact@v4
+        if: github.ref_type != 'tag'
+        with:
+          name: models
+          path: dist/models/

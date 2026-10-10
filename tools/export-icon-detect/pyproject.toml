@@ -1,0 +1,24 @@
+[project]
+name = "export-icon-detect"
+version = "0.0.0"
+description = "Exports OmniParser icon_detect_v3 (TorchScript YOLOv9-E) to ONNX for textshot"
+requires-python = ">=3.12"
+dependencies = [
+    "torch==2.14.1",
+    "onnx==1.23.2",
+    "onnxscript==0.7.2",
+    "onnxruntime==1.31.0",
+    "numpy==2.5.3",
+    "pillow==12.3.0",
+]
+
+[tool.uv]
+package = false
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }

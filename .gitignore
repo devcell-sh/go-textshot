@@ -1,0 +1,39 @@
+# Binaries and build output
+/bin/
+/textshot
+*.test
+*.out
+coverage.*
+
+# Downloaded runtime and models (never vendored)
+*.so
+*.dylib
+*.onnx
+*.tgz
+
+# Go workspace files
+go.work
+go.work.sum
+
+# Editors and tooling
+.idea/
+.vscode/
+.scratch/
+.task/
+
+# devcell container config
+.devcell/
+.devcell.toml
+
+# macOS metadata
+.DS_Store
+
+# Test results (durable, not cleaned by go test)
+test/results/*
+!test/results/.gitkeep
+
+# Model export output (published as release assets, never vendored)
+/dist/
+
+# Python tooling
+.venv/
