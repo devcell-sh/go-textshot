@@ -151,6 +151,22 @@ func TestDetectEmptyImage(t *testing.T) {
 	require.Nil(t, boxes)
 }
 
+func TestNMSDropsNestedDuplicatesButKeepsContents(t *testing.T) {
+	kept := nms([]Box{
+		{Rect: image.Rect(47, 0, 168, 22), Score: 0.17},      // loose box around a menu item
+		{Rect: image.Rect(54, 3, 160, 19), Score: 0.47},      // tight box, same item
+		{Rect: image.Rect(168, 0, 209, 22), Score: 0.12},     // loose box around "File"
+		{Rect: image.Rect(178, 3, 201, 20), Score: 0.43},     // tight box, 43% of the loose one
+		{Rect: image.Rect(676, 301, 1241, 541), Score: 0.51}, // panel
+		{Rect: image.Rect(700, 310, 730, 340), Score: 0.38},  // icon inside the panel
+	}, 0.7)
+	require.Len(t, kept, 4)
+	require.Equal(t, image.Rect(676, 301, 1241, 541), kept[0].Rect)
+	require.Equal(t, image.Rect(54, 3, 160, 19), kept[1].Rect, "tight, higher-scoring box wins")
+	require.Equal(t, image.Rect(178, 3, 201, 20), kept[2].Rect, "tight box wins even at a third of the loose one")
+	require.Equal(t, image.Rect(700, 310, 730, 340), kept[3].Rect, "small icon is not a duplicate of the panel")
+}
+
 func TestOverlap(t *testing.T) {
 	a := image.Rect(0, 0, 10, 10)
 	require.InDelta(t, 1.0, overlap(a, a), 1e-6)

@@ -198,15 +198,19 @@ func clampRound(v float64, n int) int {
 	return min(max(int(math.Round(v)), 0), n)
 }
 
-// nms keeps the highest-scoring box of every group overlapping by more
-// than iou (greedy, highest score first).
+// nms keeps the highest-scoring box of every group of duplicates (greedy,
+// highest score first). Two boxes are duplicates when their IoU exceeds
+// iou, or when one sits almost entirely inside the other and is at least
+// a third its size: the detector often emits a tight and a loose box for
+// the same control, which IoU alone does not catch. A small icon inside a
+// large panel is not a duplicate.
 func nms(boxes []Box, iou float32) []Box {
 	slices.SortStableFunc(boxes, func(a, b Box) int { return cmp.Compare(b.Score, a.Score) })
 	kept := boxes[:0:0]
 	for _, b := range boxes {
 		suppressed := false
 		for _, k := range kept {
-			if overlap(b.Rect, k.Rect) > iou {
+			if overlap(b.Rect, k.Rect) > iou || nested(b.Rect, k.Rect) {
 				suppressed = true
 				break
 			}
@@ -216,6 +220,23 @@ func nms(boxes []Box, iou float32) []Box {
 		}
 	}
 	return kept
+}
+
+// nested reports whether the smaller of a and b lies at least 80% inside
+// the larger and covers at least a third of its area: a tight box around a
+// menu item's text and the loose box around its hit area are one item,
+// while an icon inside a panel or a button is not.
+func nested(a, b image.Rectangle) bool {
+	small, large := a, b
+	if area(small) > area(large) {
+		small, large = large, small
+	}
+	inter := area(small.Intersect(large))
+	return 5*inter >= 4*area(small) && 3*area(small) >= area(large)
+}
+
+func area(r image.Rectangle) int {
+	return r.Dx() * r.Dy()
 }
 
 // overlap is the intersection-over-union of two rectangles.

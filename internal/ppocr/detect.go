@@ -170,7 +170,40 @@ func extractBoxes(prob []float32, h, w int, thresh float32, minArea int) []image
 			out = append(out, b)
 		}
 	}
-	return mergeLineBoxes(out)
+	return mergeLineBoxes(splitAtGaps(bin, w, out))
+}
+
+// splitAtGaps cuts a component box wherever a run of empty columns at
+// least 0.35x its height wide separates two runs of text. The DB map
+// blurs text outwards by a few pixels, so it bridges word spaces entirely
+// but leaves the gaps between menu-bar items and table cells that a reader
+// sees as separate lines; word spaces are far narrower than that.
+func splitAtGaps(bin []uint8, w int, boxes []image.Rectangle) []image.Rectangle {
+	out := boxes[:0:0]
+	for _, b := range boxes {
+		minGap := max(4, b.Dy()*35/100)
+		start, empty := b.Min.X, 0
+		for x := b.Min.X; x < b.Max.X; x++ {
+			occupied := false
+			for y := b.Min.Y; y < b.Max.Y; y++ {
+				if bin[y*w+x] != 0 {
+					occupied = true
+					break
+				}
+			}
+			if !occupied {
+				empty++
+				continue
+			}
+			if empty >= minGap && x-empty > start {
+				out = append(out, image.Rect(start, b.Min.Y, x-empty, b.Max.Y))
+				start = x
+			}
+			empty = 0
+		}
+		out = append(out, image.Rect(start, b.Min.Y, b.Max.X, b.Max.Y))
+	}
+	return out
 }
 
 // ccl labels 8-connected components of a binary grid with a two-pass
@@ -250,8 +283,9 @@ func ccl(bin []uint8, w, h int) ([]int32, int) {
 }
 
 // mergeLineBoxes unions boxes on the same visual line: vertical overlap of
-// at least half the shorter box and a horizontal gap no larger than the
-// shorter height. Repeats until stable.
+// at least half the shorter box and a horizontal gap under 0.35x the
+// shorter height, the complement of splitAtGaps (a word space is bridged
+// by the DB map, a menu-bar gap is not). Repeats until stable.
 func mergeLineBoxes(boxes []image.Rectangle) []image.Rectangle {
 	for changed := true; changed; {
 		changed = false
@@ -282,7 +316,7 @@ func sameLine(a, b image.Rectangle) bool {
 	case a.Min.X > b.Max.X:
 		gap = a.Min.X - b.Max.X
 	}
-	return gap <= shorter
+	return gap*100 < shorter*35
 }
 
 // filterBoxes drops boxes whose shorter side is below minSide or whose mean

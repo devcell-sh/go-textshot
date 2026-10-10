@@ -122,6 +122,25 @@ func TestMergeLineBoxes(t *testing.T) {
 	require.Len(t, mergeLineBoxes(cols), 2)
 }
 
+func TestSplitAtGaps(t *testing.T) {
+	// A 10-row map: text at x 0-19 and 40-59 bridged by one pixel on
+	// row 5 (so CCL sees one component), then a word-sized 3 px gap to
+	// text at 63-79.
+	const w, h = 80, 10
+	bin := make([]uint8, w*h)
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			if x < 20 || (x >= 40 && x < 60) || x >= 63 {
+				bin[y*w+x] = 1
+			}
+		}
+	}
+	bin[5*w+30] = 1
+	got := splitAtGaps(bin, w, []image.Rectangle{image.Rect(0, 0, 80, 10)})
+	require.Equal(t, []image.Rectangle{image.Rect(0, 0, 20, 10), image.Rect(30, 0, 31, 10), image.Rect(40, 0, 80, 10)}, got,
+		"wide gaps split, the word-sized gap at 60-63 does not; the bridge pixel becomes a sliver that filterBoxes' minSide drops")
+}
+
 func TestFilterBoxes(t *testing.T) {
 	const w, h = 20, 10
 	prob := make([]float32, w*h)
