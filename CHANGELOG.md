@@ -9,6 +9,15 @@ here.
 
 ### Added
 
+- `DetectTypeface` measures one text line against caller-supplied `Face`s
+  (TTF/OTF bytes): best-matching face with `Similarity`, em `SizePx` that
+  reproduces the ink height, `SlantDeg` and `Stroke` weight measured on the
+  pixels, and `FlagSizeOutliers` across a screen. `MeasureFace` reports a
+  face's advance width and ink extent for placing a repaint. Pure Go, no
+  model. `GoFaces` is the bundled Go family for tests and fallback.
+  `test/testdata/fonts/` holds Latin-1 subsets of open stand-ins for the
+  Windows 11 and macOS system fonts (OFL), exercised by the catalog test.
+
 - `Engine.DetectScreen` and `ComposeScreen` return a `Screen` with each
   element's pixel-measured `Style` (background, foreground, WCAG
   contrast, `Disabled`, `Highlighted`, `Focused` with the ring colour)

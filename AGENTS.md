@@ -42,6 +42,7 @@ and cgo needs `CC=<nix clang-wrapper>/bin/clang`; the e2e tests also need
 | Package | Purpose |
 |---------|---------|
 | `.` (textshot) | Public API: `Options`, `New`, `Engine.DetectText`, `Engine.DetectScreen`, `Engine.DetectElements`, `Engine.DetectInteractables`, `ComposeScreen`, `MergeElements`, `Diff`, `Lines`, `ParseQuantity`/`Quantities`/`ParseDuration`/`ParsePercent` (number + unit of measure out of an OCR line, pure Go), `Prefetch`, `PrefetchElements`; runtime/model download and cache layout |
+| `typeface.go`, `internal/typo/` | Pure-Go typography of one text line against caller-supplied faces: `DetectTypeface` (render-and-compare: face, size, similarity), `MeasureSlant`, `MeasureStroke`, `MeasureFace`, `FlagSizeOutliers`, `GoFaces`; no model, runs under CGO_ENABLED=0 |
 | `internal/screen/` | Pure-Go pixel measurements: per-box dominant background/foreground colours (4-bit histogram, mean per bin), WCAG contrast, backdrop/theme, saturated ring detection, frame diff |
 | `internal/ppocr/` | Pure-Go PP-OCRv6 pipeline over a `Runner` interface: det preprocessing, DB post-processing (CCL, merge, unclip), rec preprocessing, CTC decode, embedded dictionary |
 | `internal/uidet/` | Pure-Go OmniParser `icon_detect_v3` (YOLOv9-E) stage over a multi-output `Runner`: letterbox to /32, head decode (3 strides, ltrb distances), NMS |
@@ -57,6 +58,7 @@ and cgo needs `CC=<nix clang-wrapper>/bin/clang`; the e2e tests also need
 | `.github/dependabot.yml` | Weekly grouped Go module and GitHub Actions update PRs; actions are pinned to release commit SHAs with a `# vX.Y.Z` comment that Dependabot keeps in sync |
 | `CONTRIBUTING.md`, `CHANGELOG.md` | Setup, design rules and release process; newest-first change log (add an `Unreleased` entry with each change) |
 | `test/e2e/` | Model-backed tests, gated by `TEXTSHOT_E2E=1`: one `fixtures` table (per screenshot: wanted lines, fast-path lines, progress quantity, theme, element checks) driven by `TestDetectText`, `TestDetectText1280` and `TestDetectScreen`; add a fixture, not a test |
+| `test/testdata/fonts/` | Latin-1 subsets of open faces standing in for system fonts (Selawik for Segoe UI, Carlito for Calibri, Liberation for Arial/Times/Courier, Cascadia Mono, Inter instances for SF Pro, DejaVu Sans Mono for Menlo, Roboto, Source Sans 3, JetBrains Mono); `typeface_catalog_test.go` renders each at 13/16/24 px and must get family, weight and size back |
 | `test/testdata/` | 1920x1080 screenshots: `macos-catalina/` (Recovery loading, Utilities, Terminal; installer progress at the start and in the black full-screen phase, both with an "About N minutes remaining" line) and `windows/` (TianoCore UEFI boot, WinPE console, blank Setup blue which must yield zero elements; Windows 11 and Windows 10 Setup "N% complete" screens, the latter a 700x467 web capture) |
 | `test/results/` | Durable e2e output (`<ts>-<Test>/<fixture>.{txt,json,png}` and `<fixture>.elements.{json,png}`; the PNGs are the screenshot with boxes drawn, coloured by kind and labelled by ID), gitignored |
 
@@ -109,9 +111,24 @@ image -> downscale to ElementMaxSideLen (1280, never upscale), pad right/bottom 
 Deliberately not derived from pixels (unreliable or impossible): window and
 panel hierarchy (tried a flood-fill region detector; nested panels break the
 fill-ratio rule, dropped for now), mouse cursor (template depends on OS,
-theme and scale), font family/size, exact design-token colours, checked
-state, element classes beyond button/icon/text (would need a multi-class
-model).
+theme and scale), exact design-token colours, checked state, element
+classes beyond button/icon/text (would need a multi-class model).
+
+Font identity is the one exception, and it is scoped: `DetectTypeface`
+never names a font the caller did not hand it. It renders the OCR text in
+each supplied `Face`, scales to the crop's ink height and scores ink
+overlap (1 px tolerance) times ink-density agreement times slant
+agreement; the answer is the best candidate plus that score. Size, slant
+and stroke weight are measured on the pixels alone. Score = gray ink-map
+correlation (blurred, best of a 1 px shift) x width agreement x
+column/row profile correlation x slant agreement x stroke agreement, with
+the size refined over a 0.94..1.06 bracket. Verified in
+`typeface_catalog_test.go` with 25 open faces standing in for the Windows
+11 and macOS system fonts, rendered at 13, 16 and 24 px: 70 of 75 exact;
+the misses are monospace siblings at <= 16 px and Carlito vs Liberation
+Sans at 16 px (accepted as lookalikes by the test, listed there). Size is
+within 1.5 px everywhere; weight steps (Regular/Medium/SemiBold/Bold) all
+resolve. Cost is about 50 ms per line for 6 faces on one CPU.
 
 Known limits, verified against the fixtures (see `test/results/` after an
 e2e run):

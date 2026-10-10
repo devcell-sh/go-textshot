@@ -135,6 +135,22 @@ follows the backdrop's luminance. Colours are measurements, not design
 tokens: exact hex values, font families and point sizes are not
 recoverable from a screenshot.
 
+### Typography
+
+For callers that repaint text (masking, redaction, translation overlays):
+
+```go
+faces := []textshot.Face{{Name: "Inter Medium", Family: "Inter", TTF: interTTF}, ...}
+tf, _ := textshot.DetectTypeface(img, line.Box, line.Text, faces)
+// tf.Face, tf.SizePx, tf.Bold, tf.Italic, tf.SlantDeg, tf.Stroke, tf.Similarity
+```
+
+`DetectTypeface` renders the line's text in every face you supply, scales
+it to the crop's ink height and keeps the best pixel overlap. It never
+names a font you did not pass: the answer is "which of mine reproduces
+these pixels best, and how well". Size, slant and stroke weight are
+measured on the pixels alone and are reported even when no face fits.
+
 ### Pure helpers
 
 For callers with their own pipeline or build constraints:
