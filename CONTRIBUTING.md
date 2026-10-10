@@ -48,6 +48,10 @@ models are downloaded on first use; nothing is vendored.
   `test/results/` that shows the effect.
 - Model and runtime pins are SHA-256 digests. Bumping one is described in
   the Pinned artifacts section of [AGENTS.md](AGENTS.md).
+- GitHub Actions in `.github/workflows/` are pinned to a release commit
+  SHA, with `# vX.Y.Z` in a trailing comment and the repository URL on the
+  line above. Dependabot keeps the SHA and the version comment in sync;
+  when bumping by hand, take the SHA from the release tag, not a branch.
 - Only the MIT `icon_detect_v3` (YOLOv9-E) checkpoint may be used; the
   older `icon_detect` (YOLOv8) is AGPL.
 

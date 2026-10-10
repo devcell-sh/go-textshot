@@ -37,6 +37,8 @@ here.
 - `ErrUnavailable` messages name the remedy and the issue tracker; a
   download that fails mid-stream reports the bytes received so far.
 - CLI `-max-side` and `-element-max-side` help text states the unit (px).
+- GitHub Actions are pinned to release commit SHAs (with the version in a
+  trailing comment and the source URL above) and run on `ubuntu-26.04`.
 
 ## 2026-10-10 Initial commit (ff73318, untagged)
 

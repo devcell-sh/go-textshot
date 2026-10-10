@@ -54,7 +54,7 @@ and cgo needs `CC=<nix clang-wrapper>/bin/clang`; the e2e tests also need
 | `tools/export-icon-detect/` | uv project + script that converts the TorchScript `icon_detect_v3` to ONNX (dev-time only) |
 | `.github/workflows/ci.yaml` | On push / pull request to `main`: `task vet`, `task test`, `task test:race`, `task test:nocgo` |
 | `.github/workflows/release.yaml` | On `models-v*` tags: export, check the digest against `models.go`, publish as release assets |
-| `.github/dependabot.yml` | Weekly grouped Go module and GitHub Actions update PRs |
+| `.github/dependabot.yml` | Weekly grouped Go module and GitHub Actions update PRs; actions are pinned to release commit SHAs with a `# vX.Y.Z` comment that Dependabot keeps in sync |
 | `CONTRIBUTING.md`, `CHANGELOG.md` | Setup, design rules and release process; newest-first change log (add an `Unreleased` entry with each change) |
 | `test/e2e/` | Model-backed tests, gated by `TEXTSHOT_E2E=1` |
 | `test/testdata/` | 1920x1080 screenshots: `macos-catalina/` (Recovery loading, Utilities, Terminal) and `windows/` (TianoCore UEFI boot, WinPE console, blank Setup blue; the last must yield zero elements) |
