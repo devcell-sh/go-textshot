@@ -1,0 +1,38 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Build, vet and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - uses: arduino/setup-task@v2
+        with:
+          version: 3.x
+          repo-token: ${{ github.token }}
+
+      - name: Vet (cgo)
+        run: task vet
+
+      - name: Hermetic unit tests
+        run: task test
+
+      - name: Race detector
+        run: task test:race
+
+      - name: CGO_ENABLED=0 stub builds (also builds examples/)
+        run: task test:nocgo

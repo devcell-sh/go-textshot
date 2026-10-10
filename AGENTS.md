@@ -49,8 +49,13 @@ and cgo needs `CC=<nix clang-wrapper>/bin/clang`; the e2e tests also need
 | `internal/fetch/` | Atomic HTTP download with SHA-256 verification and progress logging |
 | `internal/testutil/` | `ResultDir(t)` and `Testdata(name)` for e2e tests |
 | `cmd/textshot/` | CLI; `-json` runs `DetectElements` and prints one JSON array |
+| `examples/detecttext/` | Smallest complete program (the README Quick start); built by `task test:nocgo` and CI so it cannot rot |
+| `example_test.go` | `go doc` / pkg.go.dev examples: `MergeElements` and `Diff` run under `task test`; the model-backed ones compile only |
 | `tools/export-icon-detect/` | uv project + script that converts the TorchScript `icon_detect_v3` to ONNX (dev-time only) |
+| `.github/workflows/ci.yaml` | On push / pull request to `main`: `task vet`, `task test`, `task test:race`, `task test:nocgo` |
 | `.github/workflows/release.yaml` | On `models-v*` tags: export, check the digest against `models.go`, publish as release assets |
+| `.github/dependabot.yml` | Weekly grouped Go module and GitHub Actions update PRs |
+| `CONTRIBUTING.md`, `CHANGELOG.md` | Setup, design rules and release process; newest-first change log (add an `Unreleased` entry with each change) |
 | `test/e2e/` | Model-backed tests, gated by `TEXTSHOT_E2E=1` |
 | `test/testdata/` | 1920x1080 screenshots: `macos-catalina/` (Recovery loading, Utilities, Terminal) and `windows/` (TianoCore UEFI boot, WinPE console, blank Setup blue; the last must yield zero elements) |
 | `test/results/` | Durable e2e output (`<ts>-<Test>/<fixture>.{txt,json,png}` and `<fixture>.elements.{json,png}`; the PNGs are the screenshot with boxes drawn, coloured by kind and labelled by ID), gitignored |
