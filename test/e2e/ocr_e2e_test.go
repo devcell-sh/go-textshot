@@ -58,7 +58,7 @@ func newEngine(t testing.TB, o textshot.Options) *textshot.Engine {
 // the test's result dir, as plain text, JSON and an annotated screenshot.
 func writeResults(t testing.TB, dir, fixture string, img image.Image, rs []textshot.TextResult, elapsed time.Duration) {
 	t.Helper()
-	base := strings.TrimSuffix(fixture, filepath.Ext(fixture))
+	base := resultBase(fixture)
 	require.NoError(t, os.WriteFile(filepath.Join(dir, base+".txt"), []byte(strings.Join(textshot.Lines(rs), "\n")+"\n"), 0o644))
 	out := struct {
 		Fixture string                `json:"fixture"`
@@ -82,23 +82,31 @@ var kindColors = map[textshot.Kind]color.RGBA{
 	textshot.KindText:   {R: 30, G: 90, B: 220, A: 255},
 }
 
-// writeElements stores the elements as JSON and as an annotated
+// writeElements stores the screen (theme, backdrop, elements) as JSON and as an annotated
 // screenshot (boxes coloured by kind, labelled with the element ID).
-func writeElements(t testing.TB, dir, fixture string, img image.Image, els []textshot.Element, elapsed time.Duration) {
+func writeElements(t testing.TB, dir, fixture string, img image.Image, scr *textshot.Screen, elapsed time.Duration) {
+	els := scr.Elements
 	t.Helper()
-	base := strings.TrimSuffix(fixture, filepath.Ext(fixture)) + ".elements"
+	base := resultBase(fixture) + ".elements"
 	out := struct {
-		Fixture  string             `json:"fixture"`
-		Elapsed  string             `json:"elapsed"`
-		Elements []textshot.Element `json:"elements"`
-	}{fixture, elapsed.String(), els}
+		Fixture string           `json:"fixture"`
+		Elapsed string           `json:"elapsed"`
+		Screen  *textshot.Screen `json:"screen"`
+	}{fixture, elapsed.String(), scr}
 	data, err := json.MarshalIndent(out, "", "  ")
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(dir, base+".json"), data, 0o644))
 
 	marks := make([]testutil.Mark, len(els))
 	for i, e := range els {
-		marks[i] = testutil.Mark{Rect: e.Box, Label: strconv.Itoa(e.ID), Color: kindColors[e.Kind]}
+		label := strconv.Itoa(e.ID)
+		if e.Style.Disabled {
+			label += " off"
+		}
+		if e.Style.Focused {
+			label += " focus"
+		}
+		marks[i] = testutil.Mark{Rect: e.Box, Label: label, Color: kindColors[e.Kind]}
 	}
 	require.NoError(t, testutil.WritePNG(filepath.Join(dir, base+".png"), testutil.Annotate(img, marks)))
 }
@@ -111,8 +119,9 @@ func TestRecoveryScreens(t *testing.T) {
 	t.Logf("results: %s", resultDir)
 
 	cases := map[string][]string{
-		"recovery-loading.png":   {"macOS Recovery", "Examining volumes", "Language Chooser"},
-		"recovery-utilities.png": {"macOS Utilities", "Reinstall macOS", "Disk Utility", "Restore From Time Machine Backup"},
+		"macos-catalina/recovery-loading.png":   {"macOS Recovery", "Examining volumes", "Language Chooser"},
+		"macos-catalina/recovery-utilities.png": {"macOS Utilities", "Reinstall macOS", "Disk Utility", "Restore From Time Machine Backup"},
+		"macos-catalina/recovery-terminal.png":  {"Terminal", "-bash", "3.2#"},
 	}
 	for name, wants := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -140,7 +149,7 @@ func TestRecoveryScreens(t *testing.T) {
 // the UI labels readable.
 func TestMaxSideLenStillReadsLabels(t *testing.T) {
 	eng := newEngine(t, textshot.Options{MaxSideLen: 1280})
-	results, err := eng.DetectText(context.Background(), loadFixture(t, "recovery-utilities.png"))
+	results, err := eng.DetectText(context.Background(), loadFixture(t, "macos-catalina/recovery-utilities.png"))
 	require.NoError(t, err)
 	joined := strings.Join(textshot.Lines(results), "\n")
 	for _, w := range []string{"macOS Utilities", "Reinstall macOS", "Disk Utility"} {
@@ -150,7 +159,7 @@ func TestMaxSideLenStillReadsLabels(t *testing.T) {
 
 func BenchmarkDetectText1080p(b *testing.B) {
 	eng := newEngine(b, textshot.Options{Logger: slog.New(slog.DiscardHandler)})
-	img := loadFixture(b, "recovery-utilities.png")
+	img := loadFixture(b, "macos-catalina/recovery-utilities.png")
 	b.ResetTimer()
 	for b.Loop() {
 		if _, err := eng.DetectText(context.Background(), img); err != nil {
@@ -161,7 +170,7 @@ func BenchmarkDetectText1080p(b *testing.B) {
 
 func BenchmarkDetectText1280(b *testing.B) {
 	eng := newEngine(b, textshot.Options{MaxSideLen: 1280, Logger: slog.New(slog.DiscardHandler)})
-	img := loadFixture(b, "recovery-utilities.png")
+	img := loadFixture(b, "macos-catalina/recovery-utilities.png")
 	b.ResetTimer()
 	for b.Loop() {
 		if _, err := eng.DetectText(context.Background(), img); err != nil {
@@ -170,45 +179,118 @@ func BenchmarkDetectText1280(b *testing.B) {
 	}
 }
 
-// TestRecoveryElements runs the element detector on the Utilities screen
-// and checks that the Continue button and the window controls are found
-// and that OCR labels land on the right elements.
+// detectScreen runs DetectScreen on a fixture, stores the results, logs
+// every element and returns the screen plus a key -> element index.
+func detectScreen(t *testing.T, eng *textshot.Engine, resultDir, name string) (*textshot.Screen, map[string]*textshot.Element) {
+	t.Helper()
+	img := loadFixture(t, name)
+	start := time.Now()
+	scr, err := eng.DetectScreen(context.Background(), img)
+	elapsed := time.Since(start)
+	require.NoError(t, err)
+	writeElements(t, resultDir, name, img, scr, elapsed)
+
+	kinds := map[textshot.Kind]int{}
+	byKey := map[string]*textshot.Element{}
+	for i := range scr.Elements {
+		e := &scr.Elements[i]
+		kinds[e.Kind]++
+		byKey[e.Key] = e
+		t.Logf("%2d %-6s %v %.2f %q bg=%v fg=%v contrast=%.1f disabled=%v highlighted=%v focused=%v", e.ID, e.Kind, e.Box, e.Score, e.Text, e.Style.Background, e.Style.Foreground, e.Style.Contrast, e.Style.Disabled, e.Style.Highlighted, e.Style.Focused)
+		require.True(t, e.Box.In(img.Bounds()), "box %v", e.Box)
+		require.Equal(t, i, e.ID, "ID is the index in the returned list")
+	}
+	t.Logf("%d elements in %s: %v, theme %s, backdrop %v", len(scr.Elements), elapsed.Round(time.Millisecond), kinds, scr.Theme, scr.Backdrop)
+	return scr, byKey
+}
+
+// TestRecoveryElements runs the element detector on the Recovery screens
+// and checks the elements mackit keys on: buttons with their labels and
+// state, window controls, row icons with their titles.
 func TestRecoveryElements(t *testing.T) {
 	eng := newEngine(t, textshot.Options{})
 	resultDir := testutil.ResultDir(t)
 	t.Logf("results: %s", resultDir)
 
-	img := loadFixture(t, "recovery-utilities.png")
-	start := time.Now()
-	elements, err := eng.DetectElements(context.Background(), img)
-	elapsed := time.Since(start)
-	require.NoError(t, err)
-	writeElements(t, resultDir, "recovery-utilities.png", img, elements, elapsed)
+	t.Run("macos-catalina/recovery-utilities.png", func(t *testing.T) {
+		scr, byKey := detectScreen(t, eng, resultDir, "macos-catalina/recovery-utilities.png")
+		require.Equal(t, textshot.ThemeDark, scr.Theme)
 
-	var kinds = map[textshot.Kind]int{}
-	var continueBtn *textshot.Element
-	for i := range elements {
-		e := &elements[i]
-		kinds[e.Kind]++
-		t.Logf("%-6s %v %.2f %q", e.Kind, e.Box, e.Score, e.Text)
-		require.True(t, e.Box.In(img.Bounds()), "box %v", e.Box)
-		if e.Kind == textshot.KindButton && e.Text == "Continue" {
-			continueBtn = e
+		btn := byKey["button:Continue"]
+		require.NotNil(t, btn, "Continue button labelled")
+		require.GreaterOrEqual(t, btn.Score, float32(0.5))
+		require.True(t, btn.Box.Overlaps(image.Rect(1160, 554, 1243, 575)), "Continue box %v", btn.Box)
+		require.True(t, btn.Style.Disabled, "greyed Continue: contrast %.2f", btn.Style.Contrast)
+
+		for _, k := range []string{"icon:Restore From Time Machine Backup", "icon:Reinstall macOS", "icon:Get Help Online", "icon:Disk Utility"} {
+			require.NotNil(t, byKey[k], "row icon labelled by its title: %s", k)
+		}
+		for _, k := range []string{"text:Restore From Time Machine Backup", "text:Disk Utility", "text:macOS Utilities"} {
+			require.NotNil(t, byKey[k], "rows stay text, not swallowed by the panel: %s", k)
+		}
+		require.NotNil(t, byKey["icon@670,192"], "close window control")
+		require.Equal(t, 1, countNear(scr.Elements, image.Rect(47, 0, 168, 22)), "one box per menu item, no nested duplicates")
+		require.Equal(t, 1, countNear(scr.Elements, image.Rect(168, 0, 209, 22)), "File menu: tight and loose boxes collapse to one")
+
+		panel := byKey["icon@676,301"]
+		if panel == nil {
+			panel = nearest(scr.Elements, image.Pt(680, 305))
+		}
+		require.NotNil(t, panel, "list panel")
+		require.True(t, panel.Style.Focused, "the list has the 4 px blue focus ring")
+		require.Greater(t, int(panel.Style.Ring.B), int(panel.Style.Ring.R), "blue ring: %v", panel.Style.Ring)
+		safari := byKey["icon:Get Help Online"]
+		require.NotNil(t, safari)
+		require.False(t, safari.Style.Focused, "a blue icon is a fill, not a ring")
+	})
+
+	t.Run("macos-catalina/recovery-terminal.png", func(t *testing.T) {
+		scr, byKey := detectScreen(t, eng, resultDir, "macos-catalina/recovery-terminal.png")
+		require.Equal(t, textshot.ThemeDark, scr.Theme)
+		title := withText(scr.Elements, "-bash —")
+		require.NotNil(t, title, "window title")
+		require.False(t, title.Style.Disabled)
+		closeBtn := byKey["icon@47,66"]
+		if closeBtn == nil {
+			closeBtn = nearest(scr.Elements, image.Pt(53, 72))
+		}
+		require.NotNil(t, closeBtn, "close window control")
+		require.Less(t, closeBtn.Box.Min.X, 60)
+		require.Greater(t, int(closeBtn.Style.Background.R), 200, "red close control, window is active: %v", closeBtn.Style.Background)
+		prompt := withText(scr.Elements, "3.2#")
+		require.NotNil(t, prompt, "shell prompt")
+	})
+}
+
+// countNear counts non-text elements whose box overlaps r by more than half of
+// the smaller area.
+func countNear(els []textshot.Element, r image.Rectangle) int {
+	n := 0
+	for _, e := range els {
+		inter := e.Box.Intersect(r)
+		if inter.Empty() {
+			continue
+		}
+		if e.Kind != textshot.KindText && 2*inter.Dx()*inter.Dy() > min(e.Box.Dx()*e.Box.Dy(), r.Dx()*r.Dy()) {
+			n++
 		}
 	}
-	t.Logf("%d elements in %s: %v", len(elements), elapsed.Round(time.Millisecond), kinds)
-	require.NotNil(t, continueBtn, "Continue button labelled")
-	require.Equal(t, "button:Continue", continueBtn.Key)
-	require.Equal(t, continueBtn, &elements[continueBtn.ID], "ID is the index in the returned list")
-	require.GreaterOrEqual(t, continueBtn.Score, float32(0.5))
-	require.True(t, continueBtn.Box.Overlaps(image.Rect(1160, 554, 1243, 575)), "Continue box %v", continueBtn.Box)
-	require.GreaterOrEqual(t, kinds[textshot.KindIcon], 3, "window controls")
-	require.GreaterOrEqual(t, kinds[textshot.KindText], 5, "list rows stay text, not swallowed by the panel")
+	return n
+}
+
+// nearest returns the icon whose box contains p, or nil.
+func nearest(els []textshot.Element, p image.Point) *textshot.Element {
+	for i := range els {
+		if els[i].Kind == textshot.KindIcon && p.In(els[i].Box) {
+			return &els[i]
+		}
+	}
+	return nil
 }
 
 func BenchmarkDetectInteractables1280(b *testing.B) {
 	eng := newEngine(b, textshot.Options{Logger: slog.New(slog.DiscardHandler)})
-	img := loadFixture(b, "recovery-utilities.png")
+	img := loadFixture(b, "macos-catalina/recovery-utilities.png")
 	if _, err := eng.DetectInteractables(context.Background(), img); err != nil {
 		b.Fatal(err)
 	}
@@ -218,4 +300,69 @@ func BenchmarkDetectInteractables1280(b *testing.B) {
 			b.Fatal(err)
 		}
 	}
+}
+
+// withText returns the first element whose text contains s, or nil.
+func withText(els []textshot.Element, s string) *textshot.Element {
+	for i := range els {
+		if strings.Contains(els[i].Text, s) {
+			return &els[i]
+		}
+	}
+	return nil
+}
+
+// resultBase flattens a fixture path into a result file stem:
+// "macos-catalina/recovery-utilities.png" -> "macos-catalina-recovery-utilities".
+func resultBase(fixture string) string {
+	return strings.ReplaceAll(strings.TrimSuffix(fixture, filepath.Ext(fixture)), "/", "-")
+}
+
+// TestWindowsScreens covers the 800x600 Windows boot and WinPE fixtures
+// go-winkit keys on, including a blank screen that must yield nothing.
+func TestWindowsScreens(t *testing.T) {
+	eng := newEngine(t, textshot.Options{})
+	resultDir := testutil.ResultDir(t)
+	t.Logf("results: %s", resultDir)
+
+	t.Run("windows/boot-uefi.png", func(t *testing.T) {
+		scr, _ := detectScreen(t, eng, resultDir, "windows/boot-uefi.png")
+		require.Equal(t, textshot.ThemeDark, scr.Theme)
+		require.Equal(t, color.RGBA{0, 0, 0, 255}, scr.Backdrop)
+		require.NotNil(t, withText(scr.Elements, "Core"), "TianoCore logo text")
+		require.NotNil(t, withText(scr.Elements, "Firmware"), "logo tagline")
+	})
+
+	t.Run("windows/pe-console.png", func(t *testing.T) {
+		scr, _ := detectScreen(t, eng, resultDir, "windows/pe-console.png")
+		require.Equal(t, textshot.ThemeDark, scr.Theme)
+		require.NotNil(t, withText(scr.Elements, "winkit-service"), "console title")
+		require.NotNil(t, withText(scr.Elements, "DrvLoad"), "log line")
+		require.NotNil(t, withText(scr.Elements, "completed successfully"), "log line")
+		closeBtn := nearest(scr.Elements, image.Pt(773, 71))
+		if closeBtn == nil {
+			for i := range scr.Elements {
+				if scr.Elements[i].Kind != textshot.KindText && image.Pt(773, 71).In(scr.Elements[i].Box) {
+					closeBtn = &scr.Elements[i]
+				}
+			}
+		}
+		require.NotNil(t, closeBtn, "close window control")
+		bg := closeBtn.Style.Background
+		require.Greater(t, int(bg.R), int(bg.G)+int(bg.B), "red close control: %v", bg)
+		lines := 0
+		for _, e := range scr.Elements {
+			if e.Kind == textshot.KindText {
+				lines++
+			}
+		}
+		require.GreaterOrEqual(t, lines, 15, "console log lines")
+	})
+
+	t.Run("windows/setup-blank-blue.png", func(t *testing.T) {
+		scr, _ := detectScreen(t, eng, resultDir, "windows/setup-blank-blue.png")
+		require.Equal(t, textshot.ThemeDark, scr.Theme)
+		require.Empty(t, scr.Elements, "nothing on a blank screen")
+		require.Greater(t, int(scr.Backdrop.B), int(scr.Backdrop.R), "blue backdrop: %v", scr.Backdrop)
+	})
 }
