@@ -18,30 +18,20 @@ import (
 	"flag"
 	"fmt"
 	"image"
+
 	_ "image/gif"
 	_ "image/jpeg"
 	_ "image/png"
 	"log/slog"
+
 	"os"
 	"os/signal"
 	"runtime"
+	"strconv"
 	"time"
 
 	"github.com/devcell-sh/go-textshot"
 )
-
-type jsonElement struct {
-	File  string        `json:"file"`
-	ID    int           `json:"id"`
-	Key   string        `json:"key"`
-	Kind  textshot.Kind `json:"kind"`
-	X0    int           `json:"x0"`
-	Y0    int           `json:"y0"`
-	X1    int           `json:"x1"`
-	Y1    int           `json:"y1"`
-	Score float32       `json:"score"`
-	Text  string        `json:"text,omitempty"`
-}
 
 func main() {
 	fs := flag.NewFlagSet("textshot", flag.ExitOnError)
@@ -110,15 +100,15 @@ func main() {
 		}
 		start := time.Now()
 		if *asJSON {
-			els, err := eng.DetectElements(ctx, img)
+			scr, err := eng.DetectScreen(ctx, img)
 			if err != nil {
 				fatal(fmt.Errorf("%s: %w", name, err))
 			}
 			if *timing {
-				fmt.Fprintf(os.Stderr, "%s: %d elements in %s\n", name, len(els), time.Since(start).Round(time.Millisecond))
+				fmt.Fprintf(os.Stderr, "%s: %d elements, %s theme, in %s\n", name, len(scr.Elements), scr.Theme, time.Since(start).Round(time.Millisecond))
 			}
-			for _, e := range els {
-				elements = append(elements, jsonElement{File: name, ID: e.ID, Key: e.Key, Kind: e.Kind, X0: e.Box.Min.X, Y0: e.Box.Min.Y, X1: e.Box.Max.X, Y1: e.Box.Max.Y, Score: e.Score, Text: e.Text})
+			for _, e := range scr.Elements {
+				elements = append(elements, jsonElement{File: name, Element: e})
 			}
 			continue
 		}
@@ -161,4 +151,18 @@ func load(name string) (image.Image, error) {
 func fatal(err error) {
 	fmt.Fprintln(os.Stderr, "textshot:", err)
 	os.Exit(1)
+}
+
+// jsonElement is a textshot.Element tagged with the file it came from.
+type jsonElement struct {
+	File    string
+	Element textshot.Element
+}
+
+func (j jsonElement) MarshalJSON() ([]byte, error) {
+	data, err := json.Marshal(j.Element)
+	if err != nil {
+		return nil, err
+	}
+	return append([]byte(`{"file":`+strconv.Quote(j.File)+`,`), data[1:]...), nil
 }

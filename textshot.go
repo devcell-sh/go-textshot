@@ -21,9 +21,13 @@ package textshot
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"image"
+	"image/color"
 	"log/slog"
+	"math"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -31,9 +35,11 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/devcell-sh/go-textshot/internal/imgutil"
 	"github.com/devcell-sh/go-textshot/internal/ppocr"
+	"github.com/devcell-sh/go-textshot/internal/screen"
 	"github.com/devcell-sh/go-textshot/internal/uidet"
 )
 
@@ -161,6 +167,49 @@ const (
 	KindText Kind = "text"
 )
 
+// Theme is the overall brightness of a screen.
+type Theme string
+
+const (
+	ThemeLight Theme = "light"
+	ThemeDark  Theme = "dark"
+)
+
+// Style holds what the pixels inside and around an element's box say
+// about it. Colours are measured, not design tokens: a disabled control
+// is detected by its low contrast, a selected row or default button by
+// its accent fill, a focused control by the saturated ring around it.
+type Style struct {
+	// Background is the dominant colour inside the box.
+	Background color.RGBA
+	// Foreground is the dominant colour that contrasts with Background
+	// (text, glyph); equals Background when nothing does.
+	Foreground color.RGBA
+	// Contrast is the WCAG contrast ratio of Foreground over Background,
+	// in [1,21]. Readable text is above 4.5, greyed-out text below 3.
+	Contrast float64
+	// Disabled is true for buttons and text whose Contrast is below 3.
+	Disabled bool
+	// Highlighted is true when Background is an accent (saturated) colour:
+	// a selected row, a default button, a tinted field.
+	Highlighted bool
+	// Focused is true when a saturated ring surrounds the box; Ring is
+	// its colour.
+	Focused bool
+	Ring    color.RGBA
+}
+
+// Screen is everything DetectScreen reads off one screenshot.
+type Screen struct {
+	Size image.Point
+	// Theme is dark when the backdrop is darker than mid-grey.
+	Theme Theme
+	// Backdrop is the dominant colour of the whole screenshot.
+	Backdrop color.RGBA
+	// Elements in reading order: buttons, icons, text.
+	Elements []Element
+}
+
 // Element is one UI element found on a screenshot.
 type Element struct {
 	// ID is the element's 0-based index in reading order within the list
@@ -180,9 +229,12 @@ type Element struct {
 	// Score is the detector's confidence for interactables and the
 	// recognition confidence for text, in [0,1].
 	Score float32
-	// Text is the label inside the element (reading order, space-joined)
-	// or the text line itself; empty for icons.
+	// Text is the label inside the element (reading order, space-joined),
+	// the text line itself, or for an icon the text line right next to
+	// it on the same row; empty otherwise.
 	Text string
+	// Style is what the pixels say about the element.
+	Style Style
 }
 
 // Engine is a loaded OCR pipeline. It is safe for concurrent use.
@@ -237,7 +289,7 @@ func (e *Engine) DetectText(ctx context.Context, img image.Image) ([]TextResult,
 	out := make([]TextResult, 0, len(lines))
 	dropped := 0
 	for _, l := range lines {
-		if l.Score < e.minScore {
+		if l.Score < e.minScore || iconGlyph(l) {
 			dropped++
 			continue
 		}
@@ -307,10 +359,10 @@ func (e *Engine) elementDetector(ctx context.Context) (*uidet.Detector, error) {
 	return det, nil
 }
 
-// DetectElements runs OCR and the element detector on img and merges them
-// into one typed list in reading order: buttons (interactables with their
-// label), icons (interactables without text) and free text.
-func (e *Engine) DetectElements(ctx context.Context, img image.Image) ([]Element, error) {
+// DetectScreen runs OCR and the element detector on img and adds what the
+// pixels show: per-element colours and state, and the screen theme. See
+// ComposeScreen for the rules.
+func (e *Engine) DetectScreen(ctx context.Context, img image.Image) (*Screen, error) {
 	lines, err := e.DetectText(ctx, img)
 	if err != nil {
 		return nil, err
@@ -319,7 +371,66 @@ func (e *Engine) DetectElements(ctx context.Context, img image.Image) ([]Element
 	if err != nil {
 		return nil, err
 	}
-	return MergeElements(boxes, lines), nil
+	start := time.Now()
+	s := ComposeScreen(img, boxes, lines)
+	e.logger.Debug("textshot: compose screen", "theme", s.Theme, "elements", len(s.Elements), "elapsed", time.Since(start))
+	return s, nil
+}
+
+// DetectElements is DetectScreen's element list: buttons (interactables
+// with their label), icons (interactables without text) and free text,
+// in reading order.
+func (e *Engine) DetectElements(ctx context.Context, img image.Image) ([]Element, error) {
+	s, err := e.DetectScreen(ctx, img)
+	if err != nil {
+		return nil, err
+	}
+	return s.Elements, nil
+}
+
+// ComposeScreen builds a Screen from detector output and the pixels of
+// img, with no model involved: interactables and lines are merged by
+// MergeElements, each element's Style is measured from its box (colours,
+// contrast, disabled, highlighted, focus ring), and Theme follows the
+// backdrop's luminance.
+func ComposeScreen(img image.Image, interactables []Element, lines []TextResult) *Screen {
+	src := imgutil.ToRGBA(img)
+	all := MergeElements(interactables, lines)
+	for i := range all {
+		all[i].Style = measureStyle(src, all[i])
+	}
+	backdrop := screen.Backdrop(src)
+	theme := ThemeLight
+	if screen.Luminance(backdrop) < 128 {
+		theme = ThemeDark
+	}
+	return &Screen{Size: src.Rect.Size(), Theme: theme, Backdrop: backdrop, Elements: all}
+}
+
+// Diff reports the bounding box of what changed between two screenshots
+// and the fraction of pixels that did (0 when nothing moved, 1 when the
+// sizes differ). Poll it to know when a screen has settled.
+func Diff(prev, next image.Image) (image.Rectangle, float64) {
+	return screen.Diff(imgutil.ToRGBA(prev), imgutil.ToRGBA(next), 16)
+}
+
+// measureStyle reads an element's colours and state off its pixels.
+// Icons are left without Disabled/Highlighted: their fills are colourful
+// by nature, so neither contrast nor accent says anything about state.
+func measureStyle(src *image.RGBA, e Element) Style {
+	bg, fg, contrast := screen.Colors(src, e.Box)
+	s := Style{Background: bg, Foreground: fg, Contrast: contrast}
+	if e.Kind == KindButton || e.Kind == KindText {
+		s.Disabled = contrast < 3
+		s.Highlighted = screen.Accent(bg)
+	}
+	// A saturated fill (a red close button) would read as its own ring.
+	if e.Kind != KindText && !screen.Accent(bg) {
+		if ring, ok := screen.Ring(src, e.Box); ok {
+			s.Focused, s.Ring = true, ring
+		}
+	}
+	return s
 }
 
 // MergeElements labels interactables with the text lines inside them and
@@ -328,7 +439,9 @@ func (e *Engine) DetectElements(ctx context.Context, img image.Image) ([]Element
 // that covers at least half of it and is not much taller than it, so
 // panels do not swallow their rows; an interactable with text becomes
 // KindButton, one without stays KindIcon, and unassigned lines become
-// KindText.
+// KindText. An icon with a free text line right next to it on the same
+// row (a list row's icon and its title) takes that line as its Text,
+// keeping KindIcon: the key reads "icon:Disk Utility".
 func MergeElements(interactables []Element, lines []TextResult) []Element {
 	out := make([]Element, len(interactables), len(interactables)+len(lines))
 	labels := make([][]string, len(interactables))
@@ -357,9 +470,32 @@ func MergeElements(interactables []Element, lines []TextResult) []Element {
 			out[i].Text = strings.Join(ls, " ")
 		}
 	}
+	for i := range interactables {
+		if out[i].Kind == KindIcon {
+			out[i].Text = adjacentLabel(out[i].Box, out[len(interactables):])
+		}
+	}
 	imgutil.SortReadingOrder(out, func(e Element) image.Rectangle { return e.Box })
 	assignIDs(out)
 	return out
+}
+
+// adjacentLabel returns the text of the topmost free text line that sits
+// on the same row to the right of box (a list row's icon, a checkbox, a
+// field with its caption), within 1.5x the box's height; empty when
+// none. Topmost, not nearest: a two-line list row has its title above
+// its description, and both start at the same x.
+func adjacentLabel(box image.Rectangle, texts []Element) string {
+	for _, t := range texts {
+		overlapY := min(box.Max.Y, t.Box.Max.Y) - max(box.Min.Y, t.Box.Min.Y)
+		if 2*overlapY < min(box.Dy(), t.Box.Dy()) {
+			continue
+		}
+		if gap := t.Box.Min.X - box.Max.X; gap >= -2 && 2*gap <= 3*box.Dy() {
+			return t.Text
+		}
+	}
+	return ""
 }
 
 // labelOf reports whether the text box line labels the interactable el:
@@ -377,6 +513,23 @@ func area(r image.Rectangle) int {
 	return r.Dx() * r.Dy()
 }
 
+// iconGlyph reports whether a recognized line is an icon misread as a
+// character: one or two CJK ideographs in a near-square box. The
+// recognizer's dictionary is mostly Chinese, so a flag, a logo or a
+// cursor decodes as a confident ideograph; real CJK text is wider.
+func iconGlyph(l ppocr.Line) bool {
+	runes := []rune(strings.TrimSpace(l.Text))
+	if len(runes) == 0 || len(runes) > 2 || l.Box.Dx() > 3*l.Box.Dy()/2 {
+		return false
+	}
+	for _, r := range runes {
+		if !unicode.Is(unicode.Han, r) {
+			return false
+		}
+	}
+	return true
+}
+
 // Close releases the model sessions. The ONNX Runtime library itself stays
 // loaded for the life of the process.
 func (e *Engine) Close() error {
@@ -388,4 +541,53 @@ func (e *Engine) Close() error {
 	}
 	e.closers = nil
 	return errors.Join(errs...)
+}
+
+// MarshalJSON renders the colours as "#rrggbb" and omits Ring unless the
+// element is focused.
+func (s Style) MarshalJSON() ([]byte, error) {
+	out := struct {
+		Background  string  `json:"background"`
+		Foreground  string  `json:"foreground"`
+		Contrast    float64 `json:"contrast"`
+		Disabled    bool    `json:"disabled"`
+		Highlighted bool    `json:"highlighted"`
+		Focused     bool    `json:"focused"`
+		Ring        string  `json:"ring,omitempty"`
+	}{hexColor(s.Background), hexColor(s.Foreground), math.Round(s.Contrast*100) / 100, s.Disabled, s.Highlighted, s.Focused, ""}
+	if s.Focused {
+		out.Ring = hexColor(s.Ring)
+	}
+	return json.Marshal(out)
+}
+
+// MarshalJSON flattens the box to x0,y0,x1,y1 and omits empty text.
+func (e Element) MarshalJSON() ([]byte, error) {
+	return json.Marshal(struct {
+		ID    int     `json:"id"`
+		Key   string  `json:"key"`
+		Kind  Kind    `json:"kind"`
+		X0    int     `json:"x0"`
+		Y0    int     `json:"y0"`
+		X1    int     `json:"x1"`
+		Y1    int     `json:"y1"`
+		Score float32 `json:"score"`
+		Text  string  `json:"text,omitempty"`
+		Style Style   `json:"style"`
+	}{e.ID, e.Key, e.Kind, e.Box.Min.X, e.Box.Min.Y, e.Box.Max.X, e.Box.Max.Y, e.Score, e.Text, e.Style})
+}
+
+// MarshalJSON renders the backdrop as "#rrggbb".
+func (s Screen) MarshalJSON() ([]byte, error) {
+	return json.Marshal(struct {
+		Width    int       `json:"width"`
+		Height   int       `json:"height"`
+		Theme    Theme     `json:"theme"`
+		Backdrop string    `json:"backdrop"`
+		Elements []Element `json:"elements"`
+	}{s.Size.X, s.Size.Y, s.Theme, hexColor(s.Backdrop), s.Elements})
+}
+
+func hexColor(c color.RGBA) string {
+	return fmt.Sprintf("#%02x%02x%02x", c.R, c.G, c.B)
 }
