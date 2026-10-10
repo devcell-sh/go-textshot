@@ -16,19 +16,24 @@ for _, line := range textshot.Lines(results) {
     fmt.Println(line)
 }
 
-elements, err := eng.DetectElements(ctx, img)   // []Element{ID, Key, Kind, Box, Score, Text}
-for _, e := range elements {
-    fmt.Println(e.ID, e.Key, e.Box)             // 32 button:Continue (1160,554)-(1243,575)
+screen, err := eng.DetectScreen(ctx, img)       // Screen{Size, Theme, Backdrop, Elements}
+for _, e := range screen.Elements {             // Element{ID, Key, Kind, Box, Score, Text, Style}
+    fmt.Println(e.ID, e.Key, e.Box, e.Style.Disabled)   // 32 button:Continue (1160,554)-(1243,575) true
 }
+
+changed, fraction := textshot.Diff(prev, img)   // what moved since the last frame
 ```
 
 `DetectElements` fuses OCR with the element detector: an interactable
 region with text inside is a `button` (push button, menu item, list row,
 link), one without is an `icon` (toolbar icon, window control, checkbox),
-and text outside any interactable is `text`. Each element carries two
+and text outside any interactable is `text`. An icon with a title right
+next to it on the same row (a list row's icon) takes that title as its
+`Text` while staying an `icon`. Each element carries two
 identifiers: `ID`, its index in reading order for that frame (a
 set-of-marks number), and `Key`, a role+name style locator
-(`button:Continue`, `text:Disk Utility`, `icon@700,310`, `#2` on repeats)
+(`button:Continue`, `text:Disk Utility`, `icon:Disk Utility` for the
+row's icon, `icon@700,310` when unlabelled, `#2` on repeats)
 that stays the same across frames while the layout does not move. Find an
 element by `Key`, confirm it by `Box`, then act. `DetectInteractables`
 runs only the detector, and `MergeElements` does the fusion for callers
@@ -36,10 +41,26 @@ that already have OCR results. The element model (232 MB) is downloaded
 and loaded on the first elements call, so engines that only read text
 never pay for it.
 
+`DetectScreen` adds what the pixels say, with no model: each element's
+`Style` (measured background and foreground colours, WCAG contrast,
+`Disabled` for greyed-out buttons and text, `Highlighted` for an accent
+fill such as a selected row or default button, `Focused` with the ring
+colour when a saturated outline surrounds it) and the screen's `Theme`
+(dark or light) and `Backdrop` colour. `ComposeScreen` is the pure part
+for callers with their own detector output. `Diff` compares two frames
+and returns the changed region and fraction, for waiting until a screen
+settles. Colours are measurements, not design tokens: exact hex values,
+font families and point sizes are not recoverable from a screenshot.
+
+Known limits: a macOS menu bar reads as one text line (the detector sees
+the whole bar as one word run), the element boxes for its items carry no
+text, and 11 px monospace text can lose a thin leading glyph. See the
+pipeline section of [AGENTS.md](AGENTS.md) for the rules and thresholds.
+
 ```sh
 go install github.com/devcell-sh/go-textshot/cmd/textshot@latest
 textshot screenshot.png            # one text line per output line
-textshot -json screenshot.png      # JSON array of elements: id, key, kind, box, score, text
+textshot -json screenshot.png      # JSON array of elements: id, key, kind, box, score, text, style
 textshot -prefetch                 # warm the cache (runtime + all models) without running
 ```
 

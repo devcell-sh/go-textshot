@@ -41,7 +41,8 @@ and cgo needs `CC=<nix clang-wrapper>/bin/clang`; the e2e tests also need
 
 | Package | Purpose |
 |---------|---------|
-| `.` (textshot) | Public API: `Options`, `New`, `Engine.DetectText`, `Engine.DetectElements`, `Engine.DetectInteractables`, `MergeElements`, `Lines`, `Prefetch`, `PrefetchElements`; runtime/model download and cache layout |
+| `.` (textshot) | Public API: `Options`, `New`, `Engine.DetectText`, `Engine.DetectScreen`, `Engine.DetectElements`, `Engine.DetectInteractables`, `ComposeScreen`, `MergeElements`, `Diff`, `Lines`, `Prefetch`, `PrefetchElements`; runtime/model download and cache layout |
+| `internal/screen/` | Pure-Go pixel measurements: per-box dominant background/foreground colours (4-bit histogram, mean per bin), WCAG contrast, backdrop/theme, saturated ring detection, frame diff |
 | `internal/ppocr/` | Pure-Go PP-OCRv6 pipeline over a `Runner` interface: det preprocessing, DB post-processing (CCL, merge, unclip), rec preprocessing, CTC decode, embedded dictionary |
 | `internal/uidet/` | Pure-Go OmniParser `icon_detect_v3` (YOLOv9-E) stage over a multi-output `Runner`: letterbox to /32, head decode (3 strides, ltrb distances), NMS |
 | `internal/imgutil/` | Shared RGBA conversion, bilinear resize, crop, reading-order sort |
@@ -51,7 +52,7 @@ and cgo needs `CC=<nix clang-wrapper>/bin/clang`; the e2e tests also need
 | `tools/export-icon-detect/` | uv project + script that converts the TorchScript `icon_detect_v3` to ONNX (dev-time only) |
 | `.github/workflows/release.yaml` | On `models-v*` tags: export, check the digest against `models.go`, publish as release assets |
 | `test/e2e/` | Model-backed tests, gated by `TEXTSHOT_E2E=1` |
-| `test/testdata/` | 1920x1080 macOS Recovery screenshots |
+| `test/testdata/` | 1920x1080 screenshots: `macos-catalina/` (Recovery loading, Utilities, Terminal) and `windows/` (TianoCore UEFI boot, WinPE console, blank Setup blue; the last must yield zero elements) |
 | `test/results/` | Durable e2e output (`<ts>-<Test>/<fixture>.{txt,json,png}` and `<fixture>.elements.{json,png}`; the PNGs are the screenshot with boxes drawn, coloured by kind and labelled by ID), gitignored |
 
 The ONNX Runtime binding is only imported from `engine_cgo.go`; everything
@@ -67,7 +68,9 @@ to CPU; the OCR sessions stay on CPU. ONNX Runtime has no Vulkan provider.
 ```
 image -> downscale to MaxSideLen (never upscale), pad to /32, ImageNet-normalize (BGR NCHW)
   -> det model (PP-OCRv6 small det) -> probability map
-  -> threshold 0.2 -> 8-connected components -> merge same-line boxes -> box_thresh 0.45 -> unclip 1.4
+  -> threshold 0.2 -> 8-connected components -> split a component at column gaps >= 35% of its
+     height (min 4 px) -> merge same-line boxes closer than 35% of the shorter height
+  -> box_thresh 0.45 -> unclip 1.4
   -> crop lines from the original image, sort in reading order
   -> resize to h=48, (x/255-0.5)/0.5 -> rec model (PP-OCRv6 small rec) -> CTC greedy decode
   -> drop lines with Score < MinScore (0.5)
@@ -75,11 +78,44 @@ image -> downscale to MaxSideLen (never upscale), pad to /32, ImageNet-normalize
 elements (on demand):
 image -> downscale to ElementMaxSideLen (1280, never upscale), pad right/bottom with grey 114 to /32, RGB/255 NCHW
   -> icon_detect_v3 (YOLOv9-E, single class) -> 3 heads x [logits, ltrb] at strides 8/16/32
-  -> sigmoid, score >= ElementMinScore (0.1), anchors +- ltrb*stride, map back, NMS IoU 0.7
+  -> sigmoid, score >= ElementMinScore (0.1), anchors +- ltrb*stride, map back
+  -> NMS IoU 0.7, plus: a box >= 80% inside a larger one and >= 1/3 of its area is the same
+     item (tight text box vs loose hit-area box around a menu item), lower score dropped
   -> MergeElements with the OCR lines: a line labels the smallest interactable that covers
-     half of it and is at most ~3x its height -> button (labelled) / icon (no text) / text (free)
+     half of it and is at most ~3x its height -> button (labelled) / icon (no text) / text (free);
+     an unlabelled icon takes the topmost free line starting right of it on the same row
+     (gap <= 1.5x its height) as Text and keeps KindIcon ("icon:Disk Utility"); one- or
+     two-rune CJK lines in a square box are detector noise on icons and are dropped
   -> ID = index in reading order (per frame), Key = "kind:text" or "icon@x,y", "#n" on repeats
+  -> Style per box (no model): bg = dominant colour, fg = dominant colour with |luminance diff| > 48,
+     Contrast = WCAG(fg, bg); Disabled = contrast < 3 (button/text only); Highlighted = bg is
+     saturated (S >= 0.35, V >= 0.25); Focused = a 1 px ring at some inset from -3 to +8 px is
+     >= 60% saturated AND saturation drops below 30% within max(6, side/4) px further in
+     (a ring is a line; a colourful icon is a fill); never checked on text or on accent fills
+  -> Theme = dark when the screenshot's dominant colour has luminance < 128
 ```
+
+Deliberately not derived from pixels (unreliable or impossible): window and
+panel hierarchy (tried a flood-fill region detector; nested panels break the
+fill-ratio rule, dropped for now), mouse cursor (template depends on OS,
+theme and scale), font family/size, exact design-token colours, checked
+state, element classes beyond button/icon/text (would need a multi-class
+model).
+
+Known limits, verified against the fixtures (see `test/results/` after an
+e2e run):
+
+- The macOS menu bar OCRs as one line ("Terminal Shell Edit View Window
+  Help"): the det probability map is saturated across the whole bar even
+  at 0.86, so no post-processing split can separate the items. The
+  element detector does return one box per menu item; they carry no text.
+- 11 px monospace text (the Recovery Terminal prompt `-bash-3.2#`) loses
+  thin leading glyphs: det fragments `-b` into sub-threshold slivers and
+  the line reads `ash-3.2#`. Tests match on `3.2#`.
+- Logos read as elements: TianoCore on `windows/boot-uefi.png` is a
+  `button` with `Disabled` set, because its grey tiles dominate the
+  contrasting bin. Low-score (0.1-0.2) icons on terminal output are
+  detector noise; raise `ElementMinScore` to 0.25 if they matter.
 
 Element identity follows the GUI-agent conventions: `ID` is a per-frame
 set-of-marks number (OmniParser, browser-use), `Key` is the role+name
