@@ -119,7 +119,10 @@ func copyWithProgress(dst io.Writer, src io.Reader, total int64, logger *slog.Lo
 			return nil
 		}
 		if readErr != nil {
-			return readErr
+			if total > 0 {
+				return fmt.Errorf("after %d of %d bytes (%d%%): %w", written, total, written*100/total, readErr)
+			}
+			return fmt.Errorf("after %d bytes: %w", written, readErr)
 		}
 	}
 }

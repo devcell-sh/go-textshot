@@ -71,3 +71,18 @@ func TestDownloadHTTPError(t *testing.T) {
 	err := Download(context.Background(), srv.URL, filepath.Join(t.TempDir(), "x"), Options{})
 	require.ErrorContains(t, err, "404")
 }
+
+func TestDownloadTruncatedReportsProgress(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "1000")
+		w.WriteHeader(http.StatusOK)
+		w.Write(make([]byte, 100))
+		w.(http.Flusher).Flush()
+		panic(http.ErrAbortHandler) // drop the connection mid-body
+	}))
+	t.Cleanup(srv.Close)
+
+	err := Download(context.Background(), srv.URL, filepath.Join(t.TempDir(), "x"), Options{})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "after 100 of 1000 bytes (10%)")
+}

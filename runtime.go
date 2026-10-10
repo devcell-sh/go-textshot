@@ -62,8 +62,8 @@ func ensureRuntime(ctx context.Context, o Options) (string, error) {
 	}
 	asset, ok := RuntimeAssetFor(runtime.GOOS, runtime.GOARCH)
 	if !ok {
-		return "", fmt.Errorf("%w: no ONNX Runtime release for %s/%s; set %s to a local libonnxruntime",
-			ErrUnavailable, runtime.GOOS, runtime.GOARCH, EnvLibraryPath)
+		return "", fmt.Errorf("%w: no ONNX Runtime release for %s/%s; set %s to a local libonnxruntime, or report the platform at %s",
+			ErrUnavailable, runtime.GOOS, runtime.GOARCH, EnvLibraryPath, issuesURL)
 	}
 	dir := filepath.Join(o.CacheDir, "onnxruntime", asset.Version)
 	dest := filepath.Join(dir, libraryFileName(runtime.GOOS))

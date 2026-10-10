@@ -17,6 +17,16 @@
 //	for _, line := range textshot.Lines(results) { ... }
 //
 //	elements, err := eng.DetectElements(ctx, img)   // buttons, icons and text with boxes
+//
+// Everything is derived from pixels; there is no accessibility tree.
+// Window and panel hierarchy, the mouse cursor, font metrics, exact design
+// token colours and checked state are deliberately not reported (see the
+// Limitations section of the README). The library exposes no plug-in
+// interface: Engine owns runtime and model loading end to end. The seam a
+// contributor would implement to add a backend is the Runner interface in
+// internal/ppocr and internal/uidet, which lives under internal/ and so
+// needs a pull request against this module. Issues and pull requests:
+// https://github.com/devcell-sh/go-textshot (see CONTRIBUTING.md).
 package textshot
 
 import (
@@ -51,6 +61,9 @@ const (
 	// directory containing it) to use instead of downloading one.
 	EnvLibraryPath = "TEXTSHOT_ONNXRUNTIME_LIB"
 )
+
+// issuesURL is where ErrUnavailable messages send unsupported platforms.
+const issuesURL = "https://github.com/devcell-sh/go-textshot/issues"
 
 // ErrUnavailable is returned (wrapped) when OCR cannot run on this build or
 // platform: the binary was built without cgo, or no ONNX Runtime release
@@ -171,8 +184,12 @@ const (
 type Theme string
 
 const (
+	// ThemeLight is a predominantly light screen: the backdrop's luminance
+	// is at least mid-grey (128).
 	ThemeLight Theme = "light"
-	ThemeDark  Theme = "dark"
+	// ThemeDark is a predominantly dark screen: the backdrop's luminance is
+	// below mid-grey (128).
+	ThemeDark Theme = "dark"
 )
 
 // Style holds what the pixels inside and around an element's box say
@@ -193,14 +210,15 @@ type Style struct {
 	// Highlighted is true when Background is an accent (saturated) colour:
 	// a selected row, a default button, a tinted field.
 	Highlighted bool
-	// Focused is true when a saturated ring surrounds the box; Ring is
-	// its colour.
+	// Focused is true when a saturated ring surrounds the box.
 	Focused bool
-	Ring    color.RGBA
+	// Ring is the colour of the focus ring; zero unless Focused.
+	Ring color.RGBA
 }
 
 // Screen is everything DetectScreen reads off one screenshot.
 type Screen struct {
+	// Size is the screenshot's width and height in pixels.
 	Size image.Point
 	// Theme is dark when the backdrop is darker than mid-grey.
 	Theme Theme
@@ -222,7 +240,9 @@ type Element struct {
 	// repeats in reading order. Keys are deterministic for a given frame
 	// and stay the same across frames while the layout does not move, so
 	// callers can find an element again by Key and confirm it by Box.
-	Key  string
+	Key string
+	// Kind is button (interactable with a label), icon (interactable
+	// without one) or text (a line outside any interactable).
 	Kind Kind
 	// Box is the element's bounding box in the source image's coordinates.
 	Box image.Rectangle
