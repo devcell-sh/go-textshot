@@ -19,8 +19,19 @@ here.
   `KindIcon`, giving a stable key such as `icon:Disk Utility`.
 - CLI `-json` emits each element's measured style alongside its geometry;
   `-t` reports the screen theme on stderr.
+- `KindProgress`: a text line that reports a quantity ("10% complete",
+  "About 3 minutes remaining...") is a `progress` element with `Value`
+  and `UOM` (second, minute, hour, day, percent), keyed
+  `progress:<text>`; `TextResult` carries the same `Value`/`UOM`, and a
+  button or icon whose label has a quantity gets them too. Backed by
+  `ParseQuantity`, `Quantities`, `ParseDuration` and `ParsePercent`:
+  pure Go regexp, no model. Bare numbers and clock times are ignored.
+- `TextResult` marshals flat like `Element` (`x0,y0,x1,y1`, `score`,
+  `text`, and `value`/`uom` when present).
 - Windows fixtures (TianoCore UEFI boot, WinPE console, blank Setup
-  screen) and a macOS Terminal fixture in the e2e suite.
+  screen, Windows 11 and 10 Setup progress), a macOS Terminal fixture and
+  two macOS installer progress fixtures in the e2e suite; the progress
+  ones check that the remaining-time and percent lines read and parse.
 - Runnable examples (`example_test.go`, `examples/detecttext`), a CI
   workflow for push and pull requests, Dependabot, `CONTRIBUTING.md` and
   this changelog.
@@ -35,6 +46,9 @@ here.
   one box instead of a hit-area box plus a text box.
 - One- or two-rune CJK lines in a near-square box are dropped as icon
   misreads.
+- A detector box below 0.3 confidence that an OCR line covers by at least
+  90% is dropped before merging: it is the text line again, not a control,
+  so a status line on a blank install screen no longer reads as a button.
 - `ErrUnavailable` messages name the remedy and the issue tracker; a
   download that fails mid-stream reports the bytes received so far.
 - CLI `-max-side` and `-element-max-side` help text states the unit (px).

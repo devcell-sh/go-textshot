@@ -154,6 +154,12 @@ type TextResult struct {
 	Text string
 	// Score is the mean per-character confidence in [0,1].
 	Score float32
+	// Value and UOM are the quantity the line reports, when it does: a
+	// percentage ("10% complete" is 10 percent) or a span of time ("About
+	// 3 minutes remaining..." is 3 minute, "1 hour and 5 minutes" is 65
+	// minute). UOM is empty on lines without one. See ParseQuantity.
+	Value float64
+	UOM   Unit
 }
 
 // Lines returns the text of each result, in order.
@@ -178,6 +184,10 @@ const (
 	// KindText is a text line that is not part of any interactable region:
 	// a title, description, status message.
 	KindText Kind = "text"
+	// KindProgress is a text line (as KindText) that reports a quantity:
+	// a percentage ("10% complete") or a span of time ("About 3 minutes
+	// remaining..."). Value and UOM carry the number and its unit.
+	KindProgress Kind = "progress"
 )
 
 // Theme is the overall brightness of a screen.
@@ -242,7 +252,8 @@ type Element struct {
 	// callers can find an element again by Key and confirm it by Box.
 	Key string
 	// Kind is button (interactable with a label), icon (interactable
-	// without one) or text (a line outside any interactable).
+	// without one), text (a line outside any interactable) or progress
+	// (such a line that reports a quantity).
 	Kind Kind
 	// Box is the element's bounding box in the source image's coordinates.
 	Box image.Rectangle
@@ -255,6 +266,12 @@ type Element struct {
 	Text string
 	// Style is what the pixels say about the element.
 	Style Style
+	// Value and UOM are the quantity Text reports, when it does: a
+	// percentage or a span of time (see TextResult.Value). Always set on
+	// KindProgress; also set on a button or icon whose label carries one.
+	// UOM is empty otherwise.
+	Value float64
+	UOM   Unit
 }
 
 // Engine is a loaded OCR pipeline. It is safe for concurrent use.
@@ -313,7 +330,8 @@ func (e *Engine) DetectText(ctx context.Context, img image.Image) ([]TextResult,
 			dropped++
 			continue
 		}
-		out = append(out, TextResult{Box: l.Box, Text: l.Text, Score: l.Score})
+		q, _ := ParseQuantity(l.Text)
+		out = append(out, TextResult{Box: l.Box, Text: l.Text, Score: l.Score, Value: q.Value, UOM: q.UOM})
 	}
 	e.logger.Debug("textshot: detect text", "size", img.Bounds().Size(), "lines", len(out), "dropped", dropped, "elapsed", time.Since(start))
 	return out, nil
@@ -440,12 +458,13 @@ func Diff(prev, next image.Image) (image.Rectangle, float64) {
 func measureStyle(src *image.RGBA, e Element) Style {
 	bg, fg, contrast := screen.Colors(src, e.Box)
 	s := Style{Background: bg, Foreground: fg, Contrast: contrast}
-	if e.Kind == KindButton || e.Kind == KindText {
+	textual := e.Kind == KindText || e.Kind == KindProgress
+	if e.Kind == KindButton || textual {
 		s.Disabled = contrast < 3
 		s.Highlighted = screen.Accent(bg)
 	}
 	// A saturated fill (a red close button) would read as its own ring.
-	if e.Kind != KindText && !screen.Accent(bg) {
+	if !textual && !screen.Accent(bg) {
 		if ring, ok := screen.Ring(src, e.Box); ok {
 			s.Focused, s.Ring = true, ring
 		}
@@ -459,10 +478,14 @@ func measureStyle(src *image.RGBA, e Element) Style {
 // that covers at least half of it and is not much taller than it, so
 // panels do not swallow their rows; an interactable with text becomes
 // KindButton, one without stays KindIcon, and unassigned lines become
-// KindText. An icon with a free text line right next to it on the same
+// KindText, or KindProgress when they report a quantity (see
+// ParseQuantity; Value and UOM are filled on every element whose Text
+// has one). A detector box below 0.3 that is just a text line again (the
+// line covers 90% of it) is dropped first: it is noise, not a control. An icon with a free text line right next to it on the same
 // row (a list row's icon and its title) takes that line as its Text,
 // keeping KindIcon: the key reads "icon:Disk Utility".
 func MergeElements(interactables []Element, lines []TextResult) []Element {
+	interactables = dropRestatedText(interactables, lines)
 	out := make([]Element, len(interactables), len(interactables)+len(lines))
 	labels := make([][]string, len(interactables))
 	for i, el := range interactables {
@@ -495,8 +518,43 @@ func MergeElements(interactables []Element, lines []TextResult) []Element {
 			out[i].Text = adjacentLabel(out[i].Box, out[len(interactables):])
 		}
 	}
+	for i := range out {
+		q, ok := ParseQuantity(out[i].Text)
+		if !ok {
+			continue
+		}
+		out[i].Value, out[i].UOM = q.Value, q.UOM
+		if out[i].Kind == KindText {
+			out[i].Kind = KindProgress
+		}
+	}
 	imgutil.SortReadingOrder(out, func(e Element) image.Rectangle { return e.Box })
 	assignIDs(out)
+	return out
+}
+
+// dropRestatedText removes low-confidence detector boxes that are just an
+// OCR line again: a box with Score below 0.3 that a single line covers by
+// at least 90%. A real control has a hit area around its label, so a box
+// as tight as the glyphs is detector noise on text (a status line on a
+// blank install screen reads as a 0.13 "button"); the line stays free, as
+// text or progress.
+func dropRestatedText(interactables []Element, lines []TextResult) []Element {
+	out := interactables[:0:0]
+	for _, el := range interactables {
+		restated := false
+		if el.Score < 0.3 {
+			for _, l := range lines {
+				if 10*area(el.Box.Intersect(l.Box)) >= 9*area(el.Box) {
+					restated = true
+					break
+				}
+			}
+		}
+		if !restated {
+			out = append(out, el)
+		}
+	}
 	return out
 }
 
@@ -581,20 +639,46 @@ func (s Style) MarshalJSON() ([]byte, error) {
 	return json.Marshal(out)
 }
 
-// MarshalJSON flattens the box to x0,y0,x1,y1 and omits empty text.
+// MarshalJSON flattens the box to x0,y0,x1,y1 and omits value and uom
+// when the line reports no quantity.
+func (r TextResult) MarshalJSON() ([]byte, error) {
+	out := struct {
+		X0    int      `json:"x0"`
+		Y0    int      `json:"y0"`
+		X1    int      `json:"x1"`
+		Y1    int      `json:"y1"`
+		Score float32  `json:"score"`
+		Text  string   `json:"text"`
+		Value *float64 `json:"value,omitempty"`
+		UOM   Unit     `json:"uom,omitempty"`
+	}{r.Box.Min.X, r.Box.Min.Y, r.Box.Max.X, r.Box.Max.Y, r.Score, r.Text, nil, r.UOM}
+	if r.UOM != "" {
+		out.Value = &r.Value
+	}
+	return json.Marshal(out)
+}
+
+// MarshalJSON flattens the box to x0,y0,x1,y1 and omits empty text, and
+// value and uom when the element reports no quantity.
 func (e Element) MarshalJSON() ([]byte, error) {
-	return json.Marshal(struct {
-		ID    int     `json:"id"`
-		Key   string  `json:"key"`
-		Kind  Kind    `json:"kind"`
-		X0    int     `json:"x0"`
-		Y0    int     `json:"y0"`
-		X1    int     `json:"x1"`
-		Y1    int     `json:"y1"`
-		Score float32 `json:"score"`
-		Text  string  `json:"text,omitempty"`
-		Style Style   `json:"style"`
-	}{e.ID, e.Key, e.Kind, e.Box.Min.X, e.Box.Min.Y, e.Box.Max.X, e.Box.Max.Y, e.Score, e.Text, e.Style})
+	out := struct {
+		ID    int      `json:"id"`
+		Key   string   `json:"key"`
+		Kind  Kind     `json:"kind"`
+		X0    int      `json:"x0"`
+		Y0    int      `json:"y0"`
+		X1    int      `json:"x1"`
+		Y1    int      `json:"y1"`
+		Score float32  `json:"score"`
+		Text  string   `json:"text,omitempty"`
+		Value *float64 `json:"value,omitempty"`
+		UOM   Unit     `json:"uom,omitempty"`
+		Style Style    `json:"style"`
+	}{e.ID, e.Key, e.Kind, e.Box.Min.X, e.Box.Min.Y, e.Box.Max.X, e.Box.Max.Y, e.Score, e.Text, nil, e.UOM, e.Style}
+	if e.UOM != "" {
+		out.Value = &e.Value
+	}
+	return json.Marshal(out)
 }
 
 // MarshalJSON renders the backdrop as "#rrggbb".

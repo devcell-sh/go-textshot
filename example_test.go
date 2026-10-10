@@ -96,3 +96,26 @@ func ExampleDiff() {
 	// Output:
 	// (0,0)-(16,16) 0.0625
 }
+
+// ExampleParseQuantity turns the progress line an installer shows into a
+// number and its unit of measure. DetectText fills TextResult.Value/UOM
+// and MergeElements makes such a line a KindProgress element the same
+// way; Quantities lists every number with a unit on a line.
+func ExampleParseQuantity() {
+	for _, line := range []string{
+		"About 3 minutes remaining...", // macOS installer
+		"• 10% complete",               // Windows Setup, spinner glyph included by OCR
+		"About 1 hour and 5 minutes remaining",
+		"Installing Windows 11", // a bare number is not a quantity
+	} {
+		q, ok := textshot.ParseQuantity(line)
+		fmt.Printf("%q -> %v %s %v\n", line, q.Value, q.UOM, ok)
+	}
+	fmt.Println(textshot.Quantities("About 1 hour and 5 minutes remaining"))
+	// Output:
+	// "About 3 minutes remaining..." -> 3 minute true
+	// "• 10% complete" -> 10 percent true
+	// "About 1 hour and 5 minutes remaining" -> 65 minute true
+	// "Installing Windows 11" -> 0  false
+	// [{1 hour 1 hour} {5 minute 5 minutes}]
+}

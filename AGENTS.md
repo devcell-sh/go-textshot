@@ -41,14 +41,14 @@ and cgo needs `CC=<nix clang-wrapper>/bin/clang`; the e2e tests also need
 
 | Package | Purpose |
 |---------|---------|
-| `.` (textshot) | Public API: `Options`, `New`, `Engine.DetectText`, `Engine.DetectScreen`, `Engine.DetectElements`, `Engine.DetectInteractables`, `ComposeScreen`, `MergeElements`, `Diff`, `Lines`, `Prefetch`, `PrefetchElements`; runtime/model download and cache layout |
+| `.` (textshot) | Public API: `Options`, `New`, `Engine.DetectText`, `Engine.DetectScreen`, `Engine.DetectElements`, `Engine.DetectInteractables`, `ComposeScreen`, `MergeElements`, `Diff`, `Lines`, `ParseQuantity`/`Quantities`/`ParseDuration`/`ParsePercent` (number + unit of measure out of an OCR line, pure Go), `Prefetch`, `PrefetchElements`; runtime/model download and cache layout |
 | `internal/screen/` | Pure-Go pixel measurements: per-box dominant background/foreground colours (4-bit histogram, mean per bin), WCAG contrast, backdrop/theme, saturated ring detection, frame diff |
 | `internal/ppocr/` | Pure-Go PP-OCRv6 pipeline over a `Runner` interface: det preprocessing, DB post-processing (CCL, merge, unclip), rec preprocessing, CTC decode, embedded dictionary |
 | `internal/uidet/` | Pure-Go OmniParser `icon_detect_v3` (YOLOv9-E) stage over a multi-output `Runner`: letterbox to /32, head decode (3 strides, ltrb distances), NMS |
 | `internal/imgutil/` | Shared RGBA conversion, bilinear resize, crop, reading-order sort |
 | `internal/fetch/` | Atomic HTTP download with SHA-256 verification and progress logging |
 | `internal/testutil/` | `ResultDir(t)` and `Testdata(name)` for e2e tests |
-| `cmd/textshot/` | CLI; `-json` runs `DetectScreen` and prints one JSON array of elements with style (theme goes to stderr with `-t`) |
+| `cmd/textshot/` | CLI; `-json` runs `DetectScreen` and prints one JSON array of elements with style and value/uom (theme goes to stderr with `-t`) |
 | `examples/detecttext/` | Smallest complete program (the README Quick start); built by `task test:nocgo` and CI so it cannot rot |
 | `example_test.go` | `go doc` / pkg.go.dev examples: `MergeElements` and `Diff` run under `task test`; the model-backed ones compile only |
 | `tools/export-icon-detect/` | uv project + script that converts the TorchScript `icon_detect_v3` to ONNX (dev-time only) |
@@ -56,8 +56,8 @@ and cgo needs `CC=<nix clang-wrapper>/bin/clang`; the e2e tests also need
 | `.github/workflows/release.yaml` | On `models-v*` tags: export, check the digest against `models.go`, publish as release assets |
 | `.github/dependabot.yml` | Weekly grouped Go module and GitHub Actions update PRs; actions are pinned to release commit SHAs with a `# vX.Y.Z` comment that Dependabot keeps in sync |
 | `CONTRIBUTING.md`, `CHANGELOG.md` | Setup, design rules and release process; newest-first change log (add an `Unreleased` entry with each change) |
-| `test/e2e/` | Model-backed tests, gated by `TEXTSHOT_E2E=1` |
-| `test/testdata/` | 1920x1080 screenshots: `macos-catalina/` (Recovery loading, Utilities, Terminal) and `windows/` (TianoCore UEFI boot, WinPE console, blank Setup blue; the last must yield zero elements) |
+| `test/e2e/` | Model-backed tests, gated by `TEXTSHOT_E2E=1`: one `fixtures` table (per screenshot: wanted lines, fast-path lines, progress quantity, theme, element checks) driven by `TestDetectText`, `TestDetectText1280` and `TestDetectScreen`; add a fixture, not a test |
+| `test/testdata/` | 1920x1080 screenshots: `macos-catalina/` (Recovery loading, Utilities, Terminal; installer progress at the start and in the black full-screen phase, both with an "About N minutes remaining" line) and `windows/` (TianoCore UEFI boot, WinPE console, blank Setup blue which must yield zero elements; Windows 11 and Windows 10 Setup "N% complete" screens, the latter a 700x467 web capture) |
 | `test/results/` | Durable e2e output (`<ts>-<Test>/<fixture>.{txt,json,png}` and `<fixture>.elements.{json,png}`; the PNGs are the screenshot with boxes drawn, coloured by kind and labelled by ID), gitignored |
 
 The ONNX Runtime binding is only imported from `engine_cgo.go`; everything
@@ -86,17 +86,23 @@ image -> downscale to ElementMaxSideLen (1280, never upscale), pad right/bottom 
   -> sigmoid, score >= ElementMinScore (0.1), anchors +- ltrb*stride, map back
   -> NMS IoU 0.7, plus: a box >= 80% inside a larger one and >= 1/3 of its area is the same
      item (tight text box vs loose hit-area box around a menu item), lower score dropped
-  -> MergeElements with the OCR lines: a line labels the smallest interactable that covers
+  -> MergeElements with the OCR lines: a detector box with score < 0.3 that one OCR line covers
+     by >= 90% is dropped (a real control has a hit area around its label; this is noise on
+     text); then a line labels the smallest interactable that covers
      half of it and is at most ~3x its height -> button (labelled) / icon (no text) / text (free);
      an unlabelled icon takes the topmost free line starting right of it on the same row
      (gap <= 1.5x its height) as Text and keeps KindIcon ("icon:Disk Utility"); one- or
      two-rune CJK lines in a square box are detector noise on icons and are dropped
+  -> a free line that reports a quantity (regexp, no model: "10% complete", "About 3 minutes
+     remaining...", "1 hour and 5 minutes" -> 65 minute) is kind progress with Value + UOM
+     (second/minute/hour/day/percent); a button or icon whose label has one keeps its kind
+     and gets Value + UOM too; bare numbers and clock times ("12:34") are not quantities
   -> ID = index in reading order (per frame), Key = "kind:text" or "icon@x,y", "#n" on repeats
   -> Style per box (no model): bg = dominant colour, fg = dominant colour with |luminance diff| > 48,
-     Contrast = WCAG(fg, bg); Disabled = contrast < 3 (button/text only); Highlighted = bg is
+     Contrast = WCAG(fg, bg); Disabled = contrast < 3 (button/text/progress only); Highlighted = bg is
      saturated (S >= 0.35, V >= 0.25); Focused = a 1 px ring at some inset from -3 to +8 px is
      >= 60% saturated AND saturation drops below 30% within max(6, side/4) px further in
-     (a ring is a line; a colourful icon is a fill); never checked on text or on accent fills
+     (a ring is a line; a colourful icon is a fill); never checked on text/progress or on accent fills
   -> Theme = dark when the screenshot's dominant colour has luminance < 128
 ```
 

@@ -66,7 +66,7 @@ Elements and pixel state come from one more call:
 
 ```go
 screen, err := eng.DetectScreen(ctx, img)       // Screen{Size, Theme, Backdrop, Elements}
-for _, e := range screen.Elements {             // Element{ID, Key, Kind, Box, Score, Text, Style}
+for _, e := range screen.Elements {             // Element{ID, Key, Kind, Box, Score, Text, Style, Value, UOM}
     fmt.Println(e.ID, e.Key, e.Box, e.Style.Disabled)   // 25 button:Continue (1160,554)-(1243,575) true
 }
 
@@ -78,7 +78,7 @@ The CLI does the same from a shell:
 ```sh
 go install github.com/devcell-sh/go-textshot/cmd/textshot@latest
 textshot screenshot.png            # one text line per output line
-textshot -json screenshot.png      # JSON array of elements: file, id, key, kind, box, score, text, style
+textshot -json screenshot.png      # JSON array of elements: file, id, key, kind, box, score, text, value, uom, style
 textshot -prefetch                 # warm the cache (runtime + all models) without running
 ```
 
@@ -89,8 +89,8 @@ the application.
 
 | Call | Returns | Fields |
 |------|---------|--------|
-| `DetectText` | one `TextResult` per text line, in reading order | `Box` in source-image pixels, `Text`, `Score` (mean per-character confidence, 0 to 1) |
-| `DetectElements`, `DetectInteractables` | one `Element` per button, icon or text line | `ID` (index in reading order for this frame), `Key` (role+name locator), `Kind` (`button`, `icon`, `text`), `Box`, `Score`, `Text`, `Style` |
+| `DetectText` | one `TextResult` per text line, in reading order | `Box` in source-image pixels, `Text`, `Score` (mean per-character confidence, 0 to 1), `Value` and `UOM` when the line reports a quantity (`10% complete` is 10 `percent`, `About 3 minutes remaining...` is 3 `minute`) |
+| `DetectElements`, `DetectInteractables` | one `Element` per button, icon, text line or progress line | `ID` (index in reading order for this frame), `Key` (role+name locator), `Kind` (`button`, `icon`, `text`, `progress`: a text line with a quantity), `Box`, `Score`, `Text`, `Value` and `UOM` on progress lines (and on a button or icon whose label carries one), `Style` |
 | `DetectScreen` | a `Screen` | `Size`, `Theme` (`light` or `dark`), `Backdrop` (dominant colour), `Elements` with `Style` filled in |
 | `Style`, on every element | | `Background` and `Foreground` colours, `Contrast` (WCAG ratio, 1 to 21: readable text is above 4.5, greyed-out below 3), `Disabled`, `Highlighted` (accent fill: a selected row, a default button), `Focused` and the `Ring` colour |
 | `Diff` | two frames compared | the bounding box of what changed and the fraction of pixels that did (0 when settled, 1 when the sizes differ) |
@@ -115,7 +115,9 @@ Runnable examples for each call are on
 `DetectElements` fuses OCR with the element detector: an interactable
 region with text inside is a `button` (push button, menu item, list row,
 link), one without is an `icon` (toolbar icon, window control, checkbox),
-and text outside any interactable is `text`. An icon with a title right
+and text outside any interactable is `text`, or `progress` when it
+reports a quantity: `{"kind":"progress","key":"progress:10% complete",
+...,"text":"10% complete","value":10,"uom":"percent"}`. An icon with a title right
 next to it on the same row (a list row's icon) takes that title as its
 `Text` while staying an `icon`. `ID` is the element's index in reading
 order for that frame (a set-of-marks number). `Key` is a role+name style
@@ -142,6 +144,13 @@ For callers with their own pipeline or build constraints:
   interactables, lines)` adds `Style` and `Theme` on top. Neither loads a
   model.
 - `Lines(results)` is the text of each result, in order.
+- `ParseQuantity(line)` reads the number with a unit of measure a line
+  reports (`"About 3 minutes remaining..."` is `3 minute`, `"10% complete"`
+  is `10 percent`, `"1 hour and 5 minutes"` is `65 minute`; units are
+  second, minute, hour, day, percent). It is what fills `Value`/`UOM` on
+  text results and elements. `Quantities` lists every such number on a
+  line; `ParseDuration` and `ParsePercent` return a `time.Duration` or
+  the percentage. Bare numbers and clock times are ignored.
 - `Prefetch` and `PrefetchElements` download the runtime and the models
   into the cache without loading them. They need no cgo, so a
   `CGO_ENABLED=0` build can warm a cache for another.
