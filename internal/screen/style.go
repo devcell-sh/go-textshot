@@ -7,11 +7,19 @@ import (
 	"image"
 	"image/color"
 	"math"
+	"sort"
 )
 
-// Colors returns the dominant background colour of r, the dominant colour
-// that contrasts with it (text or glyph), and their WCAG contrast ratio.
-// When nothing contrasts, fg equals bg and the ratio is 1.
+// Colors returns the dominant background colour of r, the colour of what
+// is drawn on it (text or glyph), and their WCAG contrast ratio. When
+// nothing contrasts, fg equals bg and the ratio is 1.
+//
+// The foreground is the stroke colour, not the most common contrasting
+// colour: thin anti-aliased text has far more edge pixels (mid-greys) than
+// core pixels, so the mode would read black text on white as grey and an
+// enabled button as disabled. Instead, among the pixels that contrast
+// with the background, the fifth farthest from it in luminance is
+// averaged.
 func Colors(img *image.RGBA, r image.Rectangle) (bg, fg color.RGBA, contrast float64) {
 	r = r.Intersect(img.Rect)
 	if r.Empty() {
@@ -27,7 +35,7 @@ func Colors(img *image.RGBA, r image.Rectangle) (bg, fg color.RGBA, contrast flo
 	}
 	bg = h.top(nil)
 	bgLum := Luminance(bg)
-	fg = h.top(func(c color.RGBA) bool { return math.Abs(Luminance(c)-bgLum) > 48 })
+	fg = h.extreme(bgLum, 48, 0.2)
 	if fg.A == 0 {
 		fg = bg
 	}
@@ -190,4 +198,45 @@ func (h *histogram) top(keep func(color.RGBA) bool) color.RGBA {
 		return color.RGBA{}
 	}
 	return h.mean(best)
+}
+
+// extreme returns the mean colour of the share frac of pixels farthest in
+// luminance from bgLum, among bins at least minDiff away from it, or the
+// zero colour when no bin qualifies. For text it is the stroke colour;
+// the anti-aliased edges nearer the background are left out.
+func (h *histogram) extreme(bgLum, minDiff, frac float64) color.RGBA {
+	type bin struct {
+		i    int
+		dist float64
+	}
+	var bins []bin
+	var total int64
+	for i, n := range h.n {
+		if n == 0 {
+			continue
+		}
+		d := math.Abs(Luminance(h.mean(i)) - bgLum)
+		if d <= minDiff {
+			continue
+		}
+		bins = append(bins, bin{i, d})
+		total += int64(n)
+	}
+	if len(bins) == 0 {
+		return color.RGBA{}
+	}
+	sort.Slice(bins, func(a, b int) bool { return bins[a].dist > bins[b].dist })
+	want := int64(math.Ceil(frac * float64(total)))
+	var n int64
+	var sum [3]int64
+	for _, b := range bins {
+		n += int64(h.n[b.i])
+		for k := range sum {
+			sum[k] += h.sum[b.i][k]
+		}
+		if n >= want {
+			break
+		}
+	}
+	return color.RGBA{uint8(sum[0] / n), uint8(sum[1] / n), uint8(sum[2] / n), 255}
 }

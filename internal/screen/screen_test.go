@@ -4,6 +4,8 @@ import (
 	"image"
 	"image/color"
 	"image/draw"
+	"image/png"
+	"os"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -110,4 +112,50 @@ func TestRingRejectsFilledIcons(t *testing.T) {
 	c, ok := Ring(img, image.Rect(30, 30, 60, 60))
 	require.True(t, ok)
 	require.Equal(t, blue, c)
+}
+
+// Thin anti-aliased text: a one-pixel stroke flanked by lighter edge
+// pixels on both sides, so edge pixels outnumber stroke pixels two to one.
+func antialiased(stroke, edge color.RGBA) *image.RGBA {
+	img := canvas(200, 40, white)
+	for x := 20; x < 120; x += 6 {
+		rect(img, image.Rect(x-1, 10, x, 30), edge)
+		rect(img, image.Rect(x, 10, x+1, 30), stroke)
+		rect(img, image.Rect(x+1, 10, x+2, 30), edge)
+	}
+	return img
+}
+
+func TestColorsReadsStrokeNotEdges(t *testing.T) {
+	_, fg, c := Colors(antialiased(black, color.RGBA{190, 190, 190, 255}), image.Rect(0, 0, 200, 40))
+	require.Equal(t, black, fg, "the stroke colour, not the more numerous edge grey")
+	require.Greater(t, c, 4.5, "black text on white is enabled")
+
+	_, fg, c = Colors(antialiased(faint, color.RGBA{215, 215, 215, 255}), image.Rect(0, 0, 200, 40))
+	require.Equal(t, faint, fg)
+	require.Less(t, c, 3.0, "grey text on white is disabled")
+}
+
+// Catalina's macOS Utilities Continue button, cropped from a build's
+// frames before and after a list row was selected: enabled text is black
+// with grey anti-aliasing, disabled text is light grey throughout.
+func TestColorsOnCatalinaContinueButton(t *testing.T) {
+	load := func(name string) *image.RGBA {
+		f, err := os.Open("../../test/testdata/macos-catalina/" + name)
+		require.NoError(t, err)
+		defer f.Close()
+		src, err := png.Decode(f)
+		require.NoError(t, err)
+		img := image.NewRGBA(src.Bounds())
+		draw.Draw(img, img.Rect, src, src.Bounds().Min, draw.Src)
+		return img
+	}
+	// The text box the detector reports, relative to the crop.
+	box := image.Rect(10, 6, 93, 27)
+
+	_, _, c := Colors(load("continue-disabled.png"), box)
+	require.Less(t, c, 3.0, "disabled Continue")
+
+	_, _, c = Colors(load("continue-enabled.png"), box)
+	require.Greater(t, c, 4.5, "enabled Continue")
 }
