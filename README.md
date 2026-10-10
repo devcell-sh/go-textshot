@@ -67,7 +67,7 @@ Elements and pixel state come from one more call:
 ```go
 screen, err := eng.DetectScreen(ctx, img)       // Screen{Size, Theme, Backdrop, Elements}
 for _, e := range screen.Elements {             // Element{ID, Key, Kind, Box, Score, Text, Style}
-    fmt.Println(e.ID, e.Key, e.Box, e.Style.Disabled)   // 32 button:Continue (1160,554)-(1243,575) true
+    fmt.Println(e.ID, e.Key, e.Box, e.Style.Disabled)   // 25 button:Continue (1160,554)-(1243,575) true
 }
 
 changed, fraction := textshot.Diff(prev, img)   // what moved since the last frame
@@ -78,52 +78,95 @@ The CLI does the same from a shell:
 ```sh
 go install github.com/devcell-sh/go-textshot/cmd/textshot@latest
 textshot screenshot.png            # one text line per output line
-textshot -json screenshot.png      # JSON array of elements: id, key, kind, box, score, text, style
+textshot -json screenshot.png      # JSON array of elements: file, id, key, kind, box, score, text, style
 textshot -prefetch                 # warm the cache (runtime + all models) without running
 ```
 
-## What you get
+## What it extracts
+
+Every value below is measured from the pixels; nothing comes from the OS or
+the application.
+
+| Call | Returns | Fields |
+|------|---------|--------|
+| `DetectText` | one `TextResult` per text line, in reading order | `Box` in source-image pixels, `Text`, `Score` (mean per-character confidence, 0 to 1) |
+| `DetectElements`, `DetectInteractables` | one `Element` per button, icon or text line | `ID` (index in reading order for this frame), `Key` (role+name locator), `Kind` (`button`, `icon`, `text`), `Box`, `Score`, `Text`, `Style` |
+| `DetectScreen` | a `Screen` | `Size`, `Theme` (`light` or `dark`), `Backdrop` (dominant colour), `Elements` with `Style` filled in |
+| `Style`, on every element | | `Background` and `Foreground` colours, `Contrast` (WCAG ratio, 1 to 21: readable text is above 4.5, greyed-out below 3), `Disabled`, `Highlighted` (accent fill: a selected row, a default button), `Focused` and the `Ring` colour |
+| `Diff` | two frames compared | the bounding box of what changed and the fraction of pixels that did (0 when settled, 1 when the sizes differ) |
+
+One element from the macOS Recovery fixture, as `textshot -json` and
+`json.Marshal` render it. Boxes flatten to `x0,y0,x1,y1`, colours are
+`#rrggbb`, `text` is omitted when empty and `ring` unless focused:
+
+```json
+{"id":25,"key":"button:Continue","kind":"button","x0":1160,"y0":554,"x1":1243,"y1":575,"score":0.75,"text":"Continue",
+ "style":{"background":"#f5f5f5","foreground":"#bababa","contrast":1.78,"disabled":true,"highlighted":false,"focused":false}}
+```
+
+The focused list icon on the same screen carries `"focused":true,"ring":"#6fa2e7"`,
+and the `Screen` marshals as
+`{"width":1920,"height":1080,"theme":"dark","backdrop":"#34343a","elements":[...]}`.
+Runnable examples for each call are on
+[pkg.go.dev](https://pkg.go.dev/github.com/devcell-sh/go-textshot#pkg-examples).
+
+### How elements are labelled
 
 `DetectElements` fuses OCR with the element detector: an interactable
 region with text inside is a `button` (push button, menu item, list row,
 link), one without is an `icon` (toolbar icon, window control, checkbox),
 and text outside any interactable is `text`. An icon with a title right
 next to it on the same row (a list row's icon) takes that title as its
-`Text` while staying an `icon`. Each element carries two
-identifiers: `ID`, its index in reading order for that frame (a
-set-of-marks number), and `Key`, a role+name style locator
-(`button:Continue`, `text:Disk Utility`, `icon:Disk Utility` for the
-row's icon, `icon@700,310` when unlabelled, `#2` on repeats)
-that stays the same across frames while the layout does not move. Find an
-element by `Key`, confirm it by `Box`, then act. `DetectInteractables`
-runs only the detector, and `MergeElements` does the fusion for callers
-that already have OCR results. The element model (232 MB) is downloaded
-and loaded on the first elements call, so engines that only read text
-never pay for it.
+`Text` while staying an `icon`. `ID` is the element's index in reading
+order for that frame (a set-of-marks number). `Key` is a role+name style
+locator (`button:Continue`, `text:Disk Utility`, `icon:Disk Utility` for
+the row's icon, `icon@700,310` when unlabelled, `#2` on repeats) that
+stays the same across frames while the layout does not move. Find an
+element by `Key`, confirm it by `Box`, then act. The element model
+(232 MB) is downloaded and loaded on the first elements call, so engines
+that only read text never pay for it.
 
-`DetectScreen` adds what the pixels say, with no model: each element's
-`Style` (measured background and foreground colours, WCAG contrast,
-`Disabled` for greyed-out buttons and text, `Highlighted` for an accent
-fill such as a selected row or default button, `Focused` with the ring
-colour when a saturated outline surrounds it) and the screen's `Theme`
-(dark or light) and `Backdrop` colour. `ComposeScreen` is the pure part
-for callers with their own detector output. `Diff` compares two frames
-and returns the changed region and fraction, for waiting until a screen
-settles. Colours are measurements, not design tokens: exact hex values,
-font families and point sizes are not recoverable from a screenshot.
+`DetectScreen` adds what the pixels say, with no model: `Disabled` is a
+button or text line whose contrast is below 3, `Highlighted` a saturated
+background, `Focused` a saturated 1 px ring around the box, and `Theme`
+follows the backdrop's luminance. Colours are measurements, not design
+tokens: exact hex values, font families and point sizes are not
+recoverable from a screenshot.
+
+### Pure helpers
+
+For callers with their own pipeline or build constraints:
+
+- `MergeElements(interactables, lines)` does the button/icon/text fusion
+  and keying from detector boxes and OCR lines; `ComposeScreen(img,
+  interactables, lines)` adds `Style` and `Theme` on top. Neither loads a
+  model.
+- `Lines(results)` is the text of each result, in order.
+- `Prefetch` and `PrefetchElements` download the runtime and the models
+  into the cache without loading them. They need no cgo, so a
+  `CGO_ENABLED=0` build can warm a cache for another.
+- `errors.Is(err, textshot.ErrUnavailable)` from `New` means OCR cannot
+  run on this build (no cgo) or host (no ONNX Runtime release); the
+  message names the remedy.
+- The pins are public for inspection: `DetModel`, `RecModel`,
+  `ElementModel` and `RuntimeAssetFor(goos, goarch)` carry name, URL,
+  SHA-256 and size; `DefaultCacheDir()` is where they land.
 
 ## Options
 
-| Option | Env | Default |
-|--------|-----|---------|
-| `CacheDir` | `TEXTSHOT_CACHE_DIR` | `os.UserCacheDir()/textshot` |
-| `LibraryPath` | `TEXTSHOT_ONNXRUNTIME_LIB` | downloaded into the cache |
-| `MaxSideLen` | | 1920 (downscale only) |
-| `Threads` | | `runtime.GOMAXPROCS(0)` |
-| `MinScore` | | 0.5 |
-| `ElementMaxSideLen` | | 1280 (downscale only) |
-| `ElementMinScore` | | 0.1 |
-| `Logger` | | discard |
+| Option | CLI flag | Env | Default |
+|--------|----------|-----|---------|
+| `CacheDir` | `-cache` | `TEXTSHOT_CACHE_DIR` | `os.UserCacheDir()/textshot` |
+| `LibraryPath` | `-lib` | `TEXTSHOT_ONNXRUNTIME_LIB` | downloaded into the cache |
+| `MaxSideLen` | `-max-side` | | 1920 px (downscale only) |
+| `Threads` | `-threads` | | `runtime.GOMAXPROCS(0)` |
+| `MinScore` | `-min-score` | | 0.5 |
+| `ElementMaxSideLen` | `-element-max-side` | | 1280 px (downscale only) |
+| `ElementMinScore` | `-element-min-score` | | 0.1 |
+| `Logger` | `-q`, `-v` | | discard |
+
+The CLI also has `-t`, which prints each image's line or element count,
+the screen theme and the elapsed time to stderr, and `-prefetch`.
 
 Platforms: linux/amd64, linux/arm64, darwin/arm64 (ONNX Runtime 1.30.0),
 darwin/amd64 (1.23.2, the last Intel macOS release). Other platforms can

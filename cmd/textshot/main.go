@@ -2,7 +2,7 @@
 // screenshots.
 //
 //	textshot [flags] image.png [image2.png ...]   # one text line per output line
-//	textshot -json image.png                      # JSON array of elements: kind, box, score, text
+//	textshot -json image.png                      # JSON array of elements: id, key, kind, box, score, text, style
 //	textshot -prefetch                            # download runtime + models, then exit
 //
 // The ONNX Runtime library and the models are downloaded into the cache
@@ -35,7 +35,7 @@ import (
 
 func main() {
 	fs := flag.NewFlagSet("textshot", flag.ExitOnError)
-	asJSON := fs.Bool("json", false, "detect UI elements and print a JSON array with kind (button, icon, text), box, score and text")
+	asJSON := fs.Bool("json", false, "detect UI elements and print a JSON array with id, key, kind (button, icon, text), box, score, text and pixel style")
 	prefetch := fs.Bool("prefetch", false, "download the runtime and all models into the cache and exit")
 	cache := fs.String("cache", "", "cache directory (default $TEXTSHOT_CACHE_DIR or "+textshot.DefaultCacheDir()+")")
 	lib := fs.String("lib", "", "libonnxruntime file or directory (default $TEXTSHOT_ONNXRUNTIME_LIB or cached download)")

@@ -17,7 +17,8 @@ here.
   frames, for polling until a screen settles.
 - List-row icons take the adjacent title as their `Text` and keep
   `KindIcon`, giving a stable key such as `icon:Disk Utility`.
-- CLI `-json` emits style and theme alongside geometry.
+- CLI `-json` emits each element's measured style alongside its geometry;
+  `-t` reports the screen theme on stderr.
 - Windows fixtures (TianoCore UEFI boot, WinPE console, blank Setup
   screen) and a macOS Terminal fixture in the e2e suite.
 - Runnable examples (`example_test.go`, `examples/detecttext`), a CI
@@ -37,6 +38,8 @@ here.
 - `ErrUnavailable` messages name the remedy and the issue tracker; a
   download that fails mid-stream reports the bytes received so far.
 - CLI `-max-side` and `-element-max-side` help text states the unit (px).
+- README lists every field the API extracts, a real JSON record, the
+  pure helpers and the CLI flag for each option.
 - GitHub Actions are pinned to release commit SHAs (with the version in a
   trailing comment and the source URL above) and run on `ubuntu-26.04`.
 

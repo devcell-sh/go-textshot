@@ -48,7 +48,7 @@ and cgo needs `CC=<nix clang-wrapper>/bin/clang`; the e2e tests also need
 | `internal/imgutil/` | Shared RGBA conversion, bilinear resize, crop, reading-order sort |
 | `internal/fetch/` | Atomic HTTP download with SHA-256 verification and progress logging |
 | `internal/testutil/` | `ResultDir(t)` and `Testdata(name)` for e2e tests |
-| `cmd/textshot/` | CLI; `-json` runs `DetectElements` and prints one JSON array |
+| `cmd/textshot/` | CLI; `-json` runs `DetectScreen` and prints one JSON array of elements with style (theme goes to stderr with `-t`) |
 | `examples/detecttext/` | Smallest complete program (the README Quick start); built by `task test:nocgo` and CI so it cannot rot |
 | `example_test.go` | `go doc` / pkg.go.dev examples: `MergeElements` and `Diff` run under `task test`; the model-backed ones compile only |
 | `tools/export-icon-detect/` | uv project + script that converts the TorchScript `icon_detect_v3` to ONNX (dev-time only) |
