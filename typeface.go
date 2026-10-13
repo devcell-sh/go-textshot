@@ -83,3 +83,9 @@ func cropImage(img image.Image, box image.Rectangle) image.Image {
 	}
 	return out
 }
+
+// InkMap is the grayscale ink intensity of a text crop: 0 is background,
+// 255 full ink, anti-aliased edges in between, with polarity taken from
+// the border and the range stretched. Thresholding it at 128 gives the
+// glyph strokes, which is the tightest possible erase mask for a line.
+func InkMap(crop image.Image) *image.Gray { return typo.InkMap(crop) }

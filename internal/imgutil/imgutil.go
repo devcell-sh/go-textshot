@@ -98,6 +98,104 @@ func CropRGBA(img image.Image, r image.Rectangle) *image.RGBA {
 	return dst
 }
 
+// TrimToInk shrinks box inward until each edge hits a row/column whose
+// pixels differ from the sampled background by more than tol in any
+// channel. The background is the median of the four corner 2x2 patches.
+// Returns the original box unchanged if trimming would collapse it.
+func TrimToInk(img *image.RGBA, box image.Rectangle, tol int) image.Rectangle {
+	box = box.Intersect(img.Rect)
+	if box.Empty() || box.Dx() < 4 || box.Dy() < 4 {
+		return box
+	}
+	bg := cornerBackground(img, box)
+
+	differs := func(x, y int) bool {
+		off := y*img.Stride + x*4
+		dr := int(img.Pix[off]) - int(bg[0])
+		dg := int(img.Pix[off+1]) - int(bg[1])
+		db := int(img.Pix[off+2]) - int(bg[2])
+		if dr < 0 {
+			dr = -dr
+		}
+		if dg < 0 {
+			dg = -dg
+		}
+		if db < 0 {
+			db = -db
+		}
+		return dr > tol || dg > tol || db > tol
+	}
+
+	colHasInk := func(x int) bool {
+		for y := box.Min.Y; y < box.Max.Y; y++ {
+			if differs(x, y) {
+				return true
+			}
+		}
+		return false
+	}
+	rowHasInk := func(y int) bool {
+		for x := box.Min.X; x < box.Max.X; x++ {
+			if differs(x, y) {
+				return true
+			}
+		}
+		return false
+	}
+
+	left := box.Min.X
+	for left < box.Max.X-1 && !colHasInk(left) {
+		left++
+	}
+	right := box.Max.X
+	for right > left+1 && !colHasInk(right-1) {
+		right--
+	}
+	top := box.Min.Y
+	for top < box.Max.Y-1 && !rowHasInk(top) {
+		top++
+	}
+	bottom := box.Max.Y
+	for bottom > top+1 && !rowHasInk(bottom-1) {
+		bottom--
+	}
+
+	trimmed := image.Rect(left, top, right, bottom)
+	if trimmed.Dx() < 2 || trimmed.Dy() < 2 {
+		return box
+	}
+	return trimmed
+}
+
+func cornerBackground(img *image.RGBA, box image.Rectangle) [3]uint8 {
+	var samples [][3]uint8
+	for _, pt := range []image.Point{
+		box.Min,
+		{box.Max.X - 1, box.Min.Y},
+		{box.Min.X, box.Max.Y - 1},
+		{box.Max.X - 1, box.Max.Y - 1},
+	} {
+		if pt.In(img.Rect) {
+			off := pt.Y*img.Stride + pt.X*4
+			samples = append(samples, [3]uint8{img.Pix[off], img.Pix[off+1], img.Pix[off+2]})
+		}
+	}
+	if len(samples) == 0 {
+		return [3]uint8{0, 0, 0}
+	}
+	// Median per channel.
+	var result [3]uint8
+	for c := 0; c < 3; c++ {
+		vals := make([]int, len(samples))
+		for i, s := range samples {
+			vals[i] = int(s[c])
+		}
+		slices.Sort(vals)
+		result[c] = uint8(vals[len(vals)/2])
+	}
+	return result
+}
+
 // SortReadingOrder orders items top-to-bottom, then left-to-right by their
 // rectangles. Items whose vertical centres differ by at most half the
 // average height share a row.

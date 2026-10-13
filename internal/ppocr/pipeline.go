@@ -35,6 +35,7 @@ func (p *Pipeline) Recognize(ctx context.Context, img image.Image) ([]Line, erro
 	}
 	detDone := time.Now()
 	sortBoxes(boxes)
+	src := imgutil.ToRGBA(img)
 	lines := make([]Line, 0, len(boxes))
 	for _, b := range boxes {
 		crop := imgutil.CropRGBA(img, b)
@@ -48,6 +49,7 @@ func (p *Pipeline) Recognize(ctx context.Context, img image.Image) ([]Line, erro
 		if res.Text == "" {
 			continue
 		}
+		b = imgutil.TrimToInk(src, b, 30)
 		lines = append(lines, Line{Box: b, Text: res.Text, Score: res.Score})
 	}
 	if p.Logger != nil {
