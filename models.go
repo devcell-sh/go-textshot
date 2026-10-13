@@ -44,6 +44,15 @@ var (
 	RecModel = hfModel("PaddlePaddle/PP-OCRv6_small_rec_onnx", "b8f84f0b80c529de40b4fbb3544b84fa7233a513", "inference.onnx",
 		"5435fd747c9e0efe15a96d0b378d5bd157e9492ed8fd80edf08f30d02fa24634", 21159378)
 
+	// MI-GAN 512 Places2 inpainting pipeline (MIT, Picsart AI Research):
+	// uint8 image + mask in, uint8 image out, crop/resize/blend inside.
+	InpaintModel = Model{
+		Name:   "migan_pipeline_v2-406830d0fa60.onnx",
+		URL:    "https://huggingface.co/andraniksargsyan/migan/resolve/406830d0fa60666da0071c342ad2fbc8f30c5c64/migan_pipeline_v2.onnx",
+		SHA256: "6f1f3530a1a2324b19752018ce756088b07973cda8d7d890034ace5c8a48c40b",
+		Size:   28079181,
+	}
+
 	// OmniParser icon_detect_v3 (MIT, YOLOv9-E interactable-region detector),
 	// exported to ONNX by tools/export-icon-detect and published by the release workflow.
 	ElementModel = releaseModel("models-v1", "icon_detect_v3.onnx",

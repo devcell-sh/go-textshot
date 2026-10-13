@@ -48,6 +48,7 @@ import (
 	"unicode"
 
 	"github.com/devcell-sh/go-textshot/internal/imgutil"
+	"github.com/devcell-sh/go-textshot/internal/inpaint"
 	"github.com/devcell-sh/go-textshot/internal/ppocr"
 	"github.com/devcell-sh/go-textshot/internal/screen"
 	"github.com/devcell-sh/go-textshot/internal/uidet"
@@ -272,6 +273,11 @@ type Element struct {
 	// UOM is empty otherwise.
 	Value float64
 	UOM   Unit
+	// Group is a 0-based spatial zone index set by GroupElements:
+	// elements on the same background panel and close together share a
+	// group. Within a group the font is expected to be consistent
+	// unless size or color differs significantly.
+	Group int
 }
 
 // Engine is a loaded OCR pipeline. It is safe for concurrent use.
@@ -286,6 +292,11 @@ type Engine struct {
 	openElements func(ctx context.Context) (*uidet.Detector, func() error, error)
 	elemMu       sync.Mutex
 	elements     *uidet.Detector
+
+	// openInpaint loads the MI-GAN pipeline on first Inpaint call (28 MB).
+	openInpaint func(ctx context.Context) (*inpaint.Inpainter, func() error, error)
+	inpaintMu   sync.Mutex
+	inpainter   *inpaint.Inpainter
 }
 
 // New prepares an Engine: it resolves or downloads the ONNX Runtime
@@ -313,6 +324,76 @@ func Prefetch(ctx context.Context, o Options) error {
 func PrefetchElements(ctx context.Context, o Options) error {
 	_, err := ensureModel(ctx, o.withDefaults(), ElementModel)
 	return err
+}
+
+// PrefetchInpaint downloads the inpainting model (28 MB) into the cache
+// without loading it.
+func PrefetchInpaint(ctx context.Context, o Options) error {
+	_, err := ensureModel(ctx, o.withDefaults(), InpaintModel)
+	return err
+}
+
+// Inpaint returns a copy of img with every pixel where mask is >= 128
+// filled from its surroundings by the MI-GAN pipeline (content-aware: it
+// continues gradients, noise and nearby edges rather than painting a flat
+// colour). mask must match img's size; InpaintMask builds one from boxes.
+// The model is downloaded and loaded on the first call.
+func (e *Engine) Inpaint(ctx context.Context, img image.Image, mask *image.Gray) (*image.RGBA, error) {
+	p, err := e.inpainterFor(ctx)
+	if err != nil {
+		return nil, err
+	}
+	start := time.Now()
+	out, err := p.Inpaint(ctx, img, mask)
+	if err != nil {
+		return nil, err
+	}
+	e.logger.Debug("inpaint", "ms", time.Since(start).Milliseconds())
+	return out, nil
+}
+
+// InpaintBoxes erases each box using only the ring of `context` pixels
+// around it: the model is run on box+ring with the box masked, and only
+// the box is written back. This is the fill to use for text boxes from
+// DetectText: no unrelated UI reaches the model and no blend halo lands
+// outside the box. 3 px is a good ring for anti-aliased UI text (see the
+// tuning test in screenpear); larger rings let neighbouring widgets in.
+func (e *Engine) InpaintBoxes(ctx context.Context, img image.Image, boxes []image.Rectangle, context int) (*image.RGBA, error) {
+	p, err := e.inpainterFor(ctx)
+	if err != nil {
+		return nil, err
+	}
+	start := time.Now()
+	out, err := p.InpaintBoxes(ctx, img, boxes, context)
+	if err != nil {
+		return nil, err
+	}
+	e.logger.Debug("inpaint boxes", "n", len(boxes), "ms", time.Since(start).Milliseconds())
+	return out, nil
+}
+
+// InpaintMask marks each box, grown by pad pixels, for filling in a
+// w x h mask for Inpaint.
+func InpaintMask(w, h int, boxes []image.Rectangle, pad int) *image.Gray {
+	return inpaint.MaskRects(w, h, boxes, pad)
+}
+
+func (e *Engine) inpainterFor(ctx context.Context) (*inpaint.Inpainter, error) {
+	e.inpaintMu.Lock()
+	defer e.inpaintMu.Unlock()
+	if e.inpainter != nil {
+		return e.inpainter, nil
+	}
+	if e.openInpaint == nil {
+		return nil, fmt.Errorf("%w: inpainting needs the ONNX Runtime build", ErrUnavailable)
+	}
+	p, closer, err := e.openInpaint(ctx)
+	if err != nil {
+		return nil, err
+	}
+	e.inpainter = p
+	e.closers = append(e.closers, closer)
+	return p, nil
 }
 
 // DetectText finds and recognizes every text line in img, returned in
@@ -437,6 +518,7 @@ func ComposeScreen(img image.Image, interactables []Element, lines []TextResult)
 	for i := range all {
 		all[i].Style = measureStyle(src, all[i])
 	}
+	GroupElements(all, src)
 	backdrop := screen.Backdrop(src)
 	theme := ThemeLight
 	if screen.Luminance(backdrop) < 128 {
@@ -665,6 +747,7 @@ func (e Element) MarshalJSON() ([]byte, error) {
 		ID    int      `json:"id"`
 		Key   string   `json:"key"`
 		Kind  Kind     `json:"kind"`
+		Group int      `json:"group"`
 		X0    int      `json:"x0"`
 		Y0    int      `json:"y0"`
 		X1    int      `json:"x1"`
@@ -674,7 +757,7 @@ func (e Element) MarshalJSON() ([]byte, error) {
 		Value *float64 `json:"value,omitempty"`
 		UOM   Unit     `json:"uom,omitempty"`
 		Style Style    `json:"style"`
-	}{e.ID, e.Key, e.Kind, e.Box.Min.X, e.Box.Min.Y, e.Box.Max.X, e.Box.Max.Y, e.Score, e.Text, nil, e.UOM, e.Style}
+	}{e.ID, e.Key, e.Kind, e.Group, e.Box.Min.X, e.Box.Min.Y, e.Box.Max.X, e.Box.Max.Y, e.Score, e.Text, nil, e.UOM, e.Style}
 	if e.UOM != "" {
 		out.Value = &e.Value
 	}
