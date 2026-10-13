@@ -43,6 +43,7 @@ and cgo needs `CC=<nix clang-wrapper>/bin/clang`; the e2e tests also need
 |---------|---------|
 | `.` (textshot) | Public API: `Options`, `New`, `Engine.DetectText`, `Engine.DetectScreen`, `Engine.DetectElements`, `Engine.DetectInteractables`, `ComposeScreen`, `MergeElements`, `Diff`, `Lines`, `ParseQuantity`/`Quantities`/`ParseDuration`/`ParsePercent` (number + unit of measure out of an OCR line, pure Go), `Prefetch`, `PrefetchElements`; runtime/model download and cache layout |
 | `typeface.go`, `internal/typo/` | Pure-Go typography of one text line against caller-supplied faces: `DetectTypeface` (render-and-compare: face, size, similarity), `MeasureSlant`, `MeasureStroke`, `MeasureFace`, `FlagSizeOutliers`, `GoFaces`; no model, runs under CGO_ENABLED=0 |
+| `internal/inpaint/` | Pure-Go tiling (512 px, 64 px overlap, only tiles that contain mask) and compositing over a `Runner` for the MI-GAN inpainting pipeline; public `Engine.Inpaint`, `InpaintMask`, `PrefetchInpaint` |
 | `internal/screen/` | Pure-Go pixel measurements: per-box dominant background/foreground colours (4-bit histogram, mean per bin), WCAG contrast, backdrop/theme, saturated ring detection, frame diff |
 | `internal/ppocr/` | Pure-Go PP-OCRv6 pipeline over a `Runner` interface: det preprocessing, DB post-processing (CCL, merge, unclip), rec preprocessing, CTC decode, embedded dictionary |
 | `internal/uidet/` | Pure-Go OmniParser `icon_detect_v3` (YOLOv9-E) stage over a multi-output `Runner`: letterbox to /32, head decode (3 strides, ltrb distances), NMS |
@@ -159,6 +160,7 @@ accessibility tree. Cross-frame matching is the caller's job: look up by
 | ONNX Runtime darwin/amd64 | GitHub release tarball | 1.23.2 (last release with an Intel macOS build) |
 | Det model | `PaddlePaddle/PP-OCRv6_small_det_onnx` on Hugging Face | commit + sha256 in `models.go` |
 | Rec model | `PaddlePaddle/PP-OCRv6_small_rec_onnx` on Hugging Face | commit + sha256 in `models.go` |
+| Inpaint model | `andraniksargsyan/migan` `migan_pipeline_v2.onnx` on Hugging Face (MI-GAN 512 Places2 pipeline, MIT, Picsart AI Research) | commit + sha256 in `models.go`; uint8 `image` [1 3 H W] + uint8 `mask` [1 1 H W] (255 keep, 0 fill) in, uint8 `result` out; the pipeline crops around the mask, runs at 512 and blends back |
 | Element model | `microsoft/OmniParser-v2.0` `icon_detect_v3/model.pt` (MIT), exported to ONNX by `tools/export-icon-detect` and published on the go-textshot `models-v*` release | release tag + sha256 in `models.go`; source `.pt` revision + sha256 in `tools/export-icon-detect/export.py` |
 | Go binding | `github.com/microsoft/onnxruntime/go` | pseudo-version in `go.mod` (untagged upstream) |
 
@@ -184,6 +186,7 @@ Default `os.UserCacheDir()/textshot` (`~/.cache/textshot` on Linux,
 <cache>/models/PP-OCRv6_small_det_onnx-<commit12>.onnx
 <cache>/models/PP-OCRv6_small_rec_onnx-<commit12>.onnx
 <cache>/models/models-v1-icon_detect_v3.onnx        # only after the first elements call or PrefetchElements
+<cache>/models/migan_pipeline_v2-406830d0fa60.onnx  # only after the first Inpaint call or PrefetchInpaint
 ```
 
 ## Environment variables

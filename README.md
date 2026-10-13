@@ -135,6 +135,17 @@ follows the backdrop's luminance. Colours are measurements, not design
 tokens: exact hex values, font families and point sizes are not
 recoverable from a screenshot.
 
+### Inpainting
+
+```go
+clean, err := eng.InpaintBoxes(ctx, img, boxes, 3)  // erase text boxes from a 3 px ring, MI-GAN (28 MB, first call)
+mask := textshot.InpaintMask(w, h, boxes, 2)        // or a free mask for Inpaint(ctx, img, mask)
+```
+
+Fills the masked pixels from their surroundings (gradients, noise and
+nearby edges continue through the hole) instead of a flat colour. Used by
+callers that repaint text.
+
 ### Typography
 
 For callers that repaint text (masking, redaction, translation overlays):

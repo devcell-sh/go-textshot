@@ -11,6 +11,7 @@ import (
 
 	ort "github.com/microsoft/onnxruntime/go/onnxruntime"
 
+	"github.com/devcell-sh/go-textshot/internal/inpaint"
 	"github.com/devcell-sh/go-textshot/internal/ppocr"
 	"github.com/devcell-sh/go-textshot/internal/uidet"
 )
@@ -88,6 +89,28 @@ func newEngine(ctx context.Context, o Options) (*Engine, error) {
 		Det:    ppocr.NewDetector(&singleRunner{det}, ppocr.DetConfig{MaxSideLen: o.MaxSideLen}),
 		Rec:    ppocr.NewRecognizer(&singleRunner{rec}, dict),
 		Logger: o.Logger,
+	}
+	e.openInpaint = func(ctx context.Context) (*inpaint.Inpainter, func() error, error) {
+		path, err := ensureModel(ctx, o, InpaintModel)
+		if err != nil {
+			return nil, nil, err
+		}
+		opts, err := newSessionOptions(o)
+		if err != nil {
+			return nil, nil, err
+		}
+		defer opts.Close()
+		sess, err := ort.NewSession(path, opts)
+		if err != nil {
+			return nil, nil, fmt.Errorf("textshot: inpaint model: %w", err)
+		}
+		ins, outs := sess.Inputs(), sess.Outputs()
+		if len(ins) != 2 || len(outs) != 1 {
+			sess.Close()
+			return nil, nil, fmt.Errorf("textshot: inpaint model has %d inputs and %d outputs, want 2/1", len(ins), len(outs))
+		}
+		r := &inpaintRunner{sess: sess, image: ins[0].Name, mask: ins[1].Name, out: outs[0].Name}
+		return inpaint.New(r), sess.Close, nil
 	}
 	e.openElements = func(ctx context.Context) (*uidet.Detector, func() error, error) {
 		return openElements(ctx, o)
@@ -239,4 +262,36 @@ type multiRunner struct{ *ortSession }
 
 func (r *multiRunner) Run(ctx context.Context, shape []int64, data []float32) ([]uidet.Output, error) {
 	return r.run(ctx, shape, data)
+}
+
+// inpaintRunner adapts the two-input uint8 MI-GAN pipeline session to
+// inpaint.Runner.
+type inpaintRunner struct {
+	sess             *ort.Session
+	image, mask, out string
+}
+
+func (r *inpaintRunner) Run(ctx context.Context, img []uint8, mask []uint8, height, width int) ([]uint8, error) {
+	h, w := int64(height), int64(width)
+	ti, err := ort.CreateTensor[uint8]([]int64{1, 3, h, w}, img)
+	if err != nil {
+		return nil, err
+	}
+	defer ti.Close()
+	tm, err := ort.CreateTensor[uint8]([]int64{1, 1, h, w}, mask)
+	if err != nil {
+		return nil, err
+	}
+	defer tm.Close()
+	res, err := r.sess.Run(ctx, map[string]*ort.Tensor{r.image: ti, r.mask: tm}, []string{r.out})
+	if err != nil {
+		return nil, err
+	}
+	o := res[r.out]
+	defer o.Close()
+	view, err := ort.TensorData[uint8](o)
+	if err != nil {
+		return nil, err
+	}
+	return append([]uint8(nil), view...), nil
 }

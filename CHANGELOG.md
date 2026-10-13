@@ -9,6 +9,17 @@ here.
 
 ### Added
 
+- `Engine.Inpaint(ctx, img, mask)` fills masked pixels from their
+  surroundings with the MI-GAN 512 pipeline (MIT), downloaded on first
+  use (28 MB, pinned) like the other models; `InpaintMask` builds a mask
+  from boxes, `PrefetchInpaint` warms the cache. Large images are tiled at
+  512 px with overlap and only tiles that contain mask are run, so a
+  1080p screenshot with text spread across it is not downscaled whole.
+  `Engine.InpaintBoxes` erases text boxes one by one from a thin ring of
+  surrounding pixels only (model sees box+ring, box is written back), the
+  mode to use for OCR boxes: no texture invented from unrelated UI, no
+  blend halo outside the box.
+
 - `DetectTypeface` measures one text line against caller-supplied `Face`s
   (TTF/OTF bytes): best-matching face with `Similarity`, em `SizePx` that
   reproduces the ink height, `SlantDeg` and `Stroke` weight measured on the
