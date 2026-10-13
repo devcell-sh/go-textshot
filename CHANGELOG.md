@@ -7,6 +7,8 @@ here.
 
 ## Unreleased
 
+## [0.2.0] - 2026-10-13
+
 ### Added
 
 - `Engine.Inpaint(ctx, img, mask)` fills masked pixels from their
